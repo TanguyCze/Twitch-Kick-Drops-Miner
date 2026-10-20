@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
+import gzip
 import json
 import math
 import random
@@ -10,6 +12,7 @@ import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from urllib.parse import urljoin
 
 import aiohttp
 from yarl import URL
@@ -162,6 +165,77 @@ GQL_QUERIES: dict[str, dict[str, Any]] = {
             }
         },
     },
+    "TopGamesDrops": {
+        "operationName": "TopGamesDrops",
+        "query": """query TopGamesDrops($first: Int!, $after: Cursor) {
+          games(first: $first, after: $after) {
+            pageInfo { hasNextPage }
+            edges {
+              cursor
+              node {
+                id
+                name
+                displayName
+                slug
+                boxArtURL
+                streams(first: 2, options: { systemFilters: [DROPS_ENABLED] }) {
+                  edges {
+                    node {
+                      broadcaster {
+                        id
+                        login
+                        displayName
+                        channel {
+                          viewerDropCampaigns {
+                            id
+                            name
+                            status
+                            startAt
+                            endAt
+                            accountLinkURL
+                            detailsURL
+                            imageURL
+                            game { id name displayName slug boxArtURL }
+                            allow { isEnabled channels { id name } }
+                            timeBasedDrops {
+                              id
+                              name
+                              startAt
+                              endAt
+                              requiredMinutesWatched
+                              requiredSubs
+                              preconditionDrops { id }
+                              benefitEdges {
+                                benefit { id name imageAssetURL distributionType }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }""",
+    },
+    "SendEvents": {
+        "operationName": "SendEvents",
+        "query": "mutation SendEvents($input: SendSpadeEventsInput!) { sendSpadeEvents(input: $input) { statusCode } }",
+    },
+    "PlaybackAccessTokenInline": {
+        "operationName": "PlaybackAccessToken",
+        "query": """query PlaybackAccessToken($login: String!, $playerType: String!) {
+          streamPlaybackAccessToken(
+            channelName: $login
+            params: { platform: "web", playerBackend: "mediaplayer", playerType: $playerType }
+          ) {
+            value
+            signature
+          }
+        }""",
+    },
 }
 
 
@@ -184,10 +258,39 @@ def parse_iso(ts: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _parse_m3u8_urls(body: str, base_url: str, kind: str) -> list[str]:
+    """Extracts variant or segment URLs from an HLS master or media playlist."""
+    tag_prefix = "#EXT-X-STREAM-INF:" if kind == "master" else "#EXTINF:"
+    urls: list[str] = []
+    expecting_uri = False
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            if line.startswith(tag_prefix):
+                expecting_uri = True
+            continue
+        if expecting_uri:
+            expecting_uri = False
+            resolved = urljoin(base_url, line)
+            if resolved.startswith("http"):
+                urls.append(resolved)
+    if not urls:
+        # Fallback if tags differed slightly
+        for raw_line in body.splitlines():
+            line = raw_line.strip()
+            if line and not line.startswith("#"):
+                resolved = urljoin(base_url, line)
+                if resolved.startswith("http"):
+                    urls.append(resolved)
+    return urls
+
+
 class TwitchMiner:
     """
-    Headless Twitch Drops & Points Miner modeled after DevilXD/TwitchDropsMiner.
-    Uses Twitch's Android App Client-Id, GQL API, PubSub WebSocket, and HLS HEAD requests.
+    Headless Twitch Drops & Points Miner modeled after DevilXD/TwitchDropsMiner & lurkloot.
+    Uses Twitch's SmartBox/Android Client-Id, GQL API, HLS segment HEAD polling, and Spade telemetry.
     """
 
     def __init__(self, config: AppConfig, events: EventBus) -> None:
@@ -196,7 +299,7 @@ class TwitchMiner:
         self.state = PlatformMinerState(
             platform=Platform.TWITCH,
             enabled=config.twitch_enabled,
-            watch_method="HLS Stream-less (HEAD)",
+            watch_method="HLS Stream-less (HEAD + Spade)",
         )
         self.campaigns: list[DropCampaign] = []
         self.channels: dict[str, ChannelInfo] = {}
@@ -204,6 +307,9 @@ class TwitchMiner:
         self._campaigns_by_id: dict[str, DropCampaign] = {}
         self._game_slug_cache: dict[str, str] = {}
         self._stream_url_cache: dict[str, tuple[str, float]] = {}
+        self._seen_segments: dict[str, list[str]] = {}
+        self._last_telemetry_at: dict[str, float] = {}
+        self._last_progress_sync: float = 0.0
 
         self._session: Optional[aiohttp.ClientSession] = None
         self._gql_semaphore = asyncio.Semaphore(5)
@@ -451,11 +557,83 @@ class TwitchMiner:
     def _merge_dict(self, primary: dict[str, Any], secondary: dict[str, Any]) -> dict[str, Any]:
         merged = dict(secondary)
         for k, v in primary.items():
+            if v is None and k in secondary:
+                continue
             if k in secondary and isinstance(v, dict) and isinstance(secondary[k], dict):
                 merged[k] = self._merge_dict(v, secondary[k])
+            elif k == "timeBasedDrops" and isinstance(v, list) and isinstance(secondary.get(k), list):
+                sec_by_id = {
+                    str(d["id"]): d
+                    for d in secondary[k]
+                    if isinstance(d, dict) and d.get("id")
+                }
+                merged_drops: list[dict[str, Any]] = []
+                seen_ids: set[str] = set()
+                for d in v:
+                    if isinstance(d, dict) and d.get("id"):
+                        did = str(d["id"])
+                        seen_ids.add(did)
+                        if did in sec_by_id:
+                            merged_drops.append(self._merge_dict(d, sec_by_id[did]))
+                        else:
+                            merged_drops.append(d)
+                for did, d in sec_by_id.items():
+                    if did not in seen_ids:
+                        merged_drops.append(d)
+                merged[k] = merged_drops
             else:
                 merged[k] = v
         return merged
+
+    async def _discover_top_games_campaigns(self) -> dict[str, dict[str, Any]]:
+        """
+        Scans the top 200 live Twitch categories with DROPS_ENABLED streams
+        to discover all active watchable Twitch Drop campaigns without requiring Web Client-Integrity.
+        """
+        discovered: dict[str, dict[str, Any]] = {}
+        cursor: Optional[str] = None
+        for _page in range(2):
+            variables: dict[str, Any] = {"first": 100}
+            if cursor:
+                variables["after"] = cursor
+            try:
+                resp = await self.gql_request(make_gql("TopGamesDrops", variables))
+            except Exception:
+                break
+            games_conn = ((resp or {}).get("data") or {}).get("games") or {}
+            edges = games_conn.get("edges") or []
+            if not edges:
+                break
+            for ge in edges:
+                cursor = (ge or {}).get("cursor") or cursor
+                g_node = (ge or {}).get("node") or {}
+                g_name = str(g_node.get("displayName") or g_node.get("name") or "")
+                g_slug = str(g_node.get("slug") or "")
+                if g_name and g_slug:
+                    self._game_slug_cache[g_name] = g_slug
+                s_edges = ((g_node.get("streams") or {}).get("edges")) or []
+                for se in s_edges:
+                    bcast = ((se or {}).get("node") or {}).get("broadcaster") or {}
+                    vdc = ((bcast.get("channel") or {}).get("viewerDropCampaigns")) or []
+                    for c in vdc:
+                        if not isinstance(c, dict) or not c.get("id") or not c.get("game"):
+                            continue
+                        cid = str(c["id"])
+                        tb_drops = c.get("timeBasedDrops") or []
+                        has_watch_drop = any(
+                            isinstance(d, dict)
+                            and int(d.get("requiredMinutesWatched") or 0) > 0
+                            and int(d.get("requiredSubs") or 0) == 0
+                            for d in tb_drops
+                        )
+                        if not has_watch_drop:
+                            continue
+                        if cid not in discovered:
+                            discovered[cid] = c
+            has_next = bool((games_conn.get("pageInfo") or {}).get("hasNextPage"))
+            if not has_next or not cursor:
+                break
+        return discovered
 
     async def fetch_inventory(self) -> None:
         if not self.state.authenticated:
@@ -466,9 +644,12 @@ class TwitchMiner:
 
         try:
             inv_resp = await self.gql_request(make_gql("Inventory"))
-            inv_node = (inv_resp.get("data") or {}).get("currentUser", {}).get("inventory") or {}
-            ongoing_raw = inv_node.get("dropCampaignsInProgress") or []
-            game_event_drops = inv_node.get("gameEventDrops") or []
+            inv_node = ((inv_resp or {}).get("data") or {}).get("currentUser", {}) or {}
+            inv_node_inner = inv_node.get("inventory") or {}
+            ongoing_raw = inv_node_inner.get("dropCampaignsInProgress") or []
+            game_event_drops = inv_node_inner.get("gameEventDrops") or []
+            earned_edges = ((inv_node_inner.get("earnedDropRewards") or {}).get("edges")) or []
+
             claimed_benefits: dict[str, datetime] = {}
             for b in game_event_drops:
                 if b and b.get("id") and b.get("lastAwardedAt"):
@@ -476,54 +657,82 @@ class TwitchMiner:
                     if dt:
                         claimed_benefits[str(b["id"])] = dt
 
+            earned_by_campaign_benefit: dict[str, set[str]] = {}
+            for edge in earned_edges:
+                node = (edge or {}).get("node") or {}
+                if node.get("status") == "CLAIMED":
+                    c_id = str((node.get("campaign") or {}).get("id") or "")
+                    b_id = str((node.get("item") or {}).get("id") or node.get("id") or "")
+                    if c_id and b_id:
+                        earned_by_campaign_benefit.setdefault(c_id, set()).add(b_id)
+
             inventory_map: dict[str, dict[str, Any]] = {
-                c["id"]: c for c in ongoing_raw if isinstance(c, dict) and c.get("id")
+                str(c["id"]): c for c in ongoing_raw if isinstance(c, dict) and c.get("id")
             }
 
-            camp_resp = await self.gql_request(make_gql("Campaigns"))
-            available_list = (
-                (camp_resp.get("data") or {}).get("currentUser", {}).get("dropCampaigns") or []
-            )
-            available_ids = [
-                c["id"]
-                for c in available_list
-                if isinstance(c, dict)
-                and c.get("id")
-                and c.get("status") in ("ACTIVE", "UPCOMING")
-            ]
-            available_map = {
-                c["id"]: c
-                for c in available_list
-                if isinstance(c, dict) and c.get("id") in available_ids
-            }
+            # 1. Try ViewerDropsDashboard
+            available_map: dict[str, dict[str, Any]] = {}
+            try:
+                camp_resp = await self.gql_request(make_gql("Campaigns"))
+                available_list = (
+                    ((camp_resp or {}).get("data") or {}).get("currentUser", {}) or {}
+                ).get("dropCampaigns") or []
+                for c in available_list:
+                    if (
+                        isinstance(c, dict)
+                        and c.get("id")
+                        and c.get("status") in ("ACTIVE", "UPCOMING")
+                    ):
+                        available_map[str(c["id"])] = c
+            except Exception:
+                pass
 
-            # Fetch extended details in chunks of 20
+            # 2. Discover active campaigns across top live games (works without Web Client-Integrity)
+            top_discovered = await self._discover_top_games_campaigns()
+            for cid, c_data in top_discovered.items():
+                if cid in available_map:
+                    available_map[cid] = self._merge_dict(available_map[cid], c_data)
+                else:
+                    available_map[cid] = c_data
+
+            # Merge discovered campaigns into inventory_map (preserving ongoing_raw as primary)
+            for cid, c_data in available_map.items():
+                if cid in inventory_map:
+                    inventory_map[cid] = self._merge_dict(inventory_map[cid], c_data)
+                else:
+                    inventory_map[cid] = c_data
+
+            # 3. Try fetching extended DropCampaignDetails in chunks of 20
+            all_ids = list(inventory_map.keys())
             user_id = self.state.user_id
-            for i in range(0, len(available_ids), 20):
-                chunk_ids = available_ids[i : i + 20]
-                ops = [
-                    make_gql(
-                        "CampaignDetails",
-                        {"channelLogin": str(user_id), "dropID": cid},
-                    )
-                    for cid in chunk_ids
-                ]
-                details_list = await self.gql_request(ops)
-                if isinstance(details_list, list):
-                    for item_resp in details_list:
-                        c_data = (
-                            ((item_resp or {}).get("data") or {})
-                            .get("user", {})
-                            .get("dropCampaign")
+            if user_id and all_ids:
+                for i in range(0, len(all_ids), 20):
+                    chunk_ids = all_ids[i : i + 20]
+                    ops = [
+                        make_gql(
+                            "CampaignDetails",
+                            {"channelLogin": str(user_id), "dropID": cid},
                         )
-                        if c_data and c_data.get("id"):
-                            cid = c_data["id"]
-                            base = available_map.get(cid, {})
-                            merged_c = self._merge_dict(base, c_data)
-                            if cid in inventory_map:
-                                inventory_map[cid] = self._merge_dict(inventory_map[cid], merged_c)
-                            else:
-                                inventory_map[cid] = merged_c
+                        for cid in chunk_ids
+                    ]
+                    try:
+                        details_list = await self.gql_request(ops)
+                        if isinstance(details_list, list):
+                            for item_resp in details_list:
+                                c_data = (
+                                    (((item_resp or {}).get("data") or {}).get("user") or {})
+                                    .get("dropCampaign")
+                                )
+                                if c_data and c_data.get("id"):
+                                    cid = str(c_data["id"])
+                                    if cid in inventory_map:
+                                        inventory_map[cid] = self._merge_dict(
+                                            inventory_map[cid], c_data
+                                        )
+                                    else:
+                                        inventory_map[cid] = c_data
+                    except Exception:
+                        pass
 
             parsed_campaigns: list[DropCampaign] = []
             new_drops_by_id: dict[str, DropReward] = {}
@@ -538,18 +747,27 @@ class TwitchMiner:
                 game_slug = str(game_obj.get("slug") or "")
                 if game_name and game_slug:
                     self._game_slug_cache[game_name] = game_slug
-                box_art = str(game_obj.get("boxArtURL") or "")
-                image_url = DIMS_PATTERN.sub("", box_art)
+                box_art = str(game_obj.get("boxArtURL") or cdata.get("imageURL") or "")
+                image_url = (
+                    DIMS_PATTERN.sub("", box_art)
+                    .replace("-{width}x{height}", "")
+                    .replace("{width}x{height}", "285x380")
+                )
 
                 starts_at = parse_iso(cdata.get("startAt"))
                 ends_at = parse_iso(cdata.get("endAt"))
                 raw_status = str(cdata.get("status") or "ACTIVE").lower()
-                linked = bool((cdata.get("self") or {}).get("isAccountConnected", False))
+                self_camp = cdata.get("self")
+                linked = (
+                    bool(self_camp.get("isAccountConnected", True))
+                    if isinstance(self_camp, dict) and "isAccountConnected" in self_camp
+                    else True
+                )
                 link_url = str(cdata.get("accountLinkURL") or "")
 
                 allow = cdata.get("allow") or {}
                 acl_channels: list[ChannelInfo] = []
-                if allow.get("channels") and allow.get("isEnabled", True):
+                if allow.get("channels") and allow.get("isEnabled") is not False:
                     for ch_raw in allow["channels"]:
                         if not isinstance(ch_raw, dict):
                             continue
@@ -570,13 +788,19 @@ class TwitchMiner:
                         )
 
                 drops_list: list[DropReward] = []
+                camp_earned_benefits = earned_by_campaign_benefit.get(str(cid), set())
                 for d_raw in cdata.get("timeBasedDrops") or []:
                     if not isinstance(d_raw, dict) or not d_raw.get("id"):
                         continue
+                    req_mins = int(d_raw.get("requiredMinutesWatched") or 0)
+                    req_subs = int(d_raw.get("requiredSubs") or 0)
+                    # Skip pure subscription-only drops with 0 watch minutes
+                    if req_mins <= 0 and req_subs > 0:
+                        continue
+
                     did = str(d_raw["id"])
                     d_start = parse_iso(d_raw.get("startAt")) or starts_at
                     d_end = parse_iso(d_raw.get("endAt")) or ends_at
-                    req_mins = int(d_raw.get("requiredMinutesWatched") or 0)
 
                     benefits = d_raw.get("benefitEdges") or []
                     b_names: list[str] = []
@@ -601,10 +825,23 @@ class TwitchMiner:
                         claim_id = self_edge.get("dropInstanceID")
                         is_claimed = bool(self_edge.get("isClaimed", False))
                         cur_mins = int(self_edge.get("currentMinutesWatched") or 0)
-                    elif b_ids and d_start and d_end:
-                        awarded_dts = [claimed_benefits[bid] for bid in b_ids if bid in claimed_benefits]
-                        if awarded_dts and all(d_start <= dt < d_end for dt in awarded_dts):
+                    else:
+                        # Preserve any existing in-memory progress if we already tracked this drop
+                        prev_drop = self._drops_by_id.get(did)
+                        if prev_drop:
+                            cur_mins = prev_drop.current_minutes
+                            is_claimed = prev_drop.is_claimed
+                            claim_id = prev_drop.claim_id
+
+                    if not is_claimed and b_ids:
+                        if any(bid in camp_earned_benefits for bid in b_ids):
                             is_claimed = True
+                        elif "self" not in d_raw and d_start and d_end:
+                            awarded_dts = [
+                                claimed_benefits[bid] for bid in b_ids if bid in claimed_benefits
+                            ]
+                            if awarded_dts and all(d_start <= dt < d_end for dt in awarded_dts):
+                                is_claimed = True
 
                     if is_claimed:
                         cur_mins = req_mins
@@ -640,6 +877,9 @@ class TwitchMiner:
                     drops_list.append(drop_obj)
                     new_drops_by_id[did] = drop_obj
 
+                if not drops_list:
+                    continue
+
                 camp_obj = DropCampaign(
                     id=str(cid),
                     name=str(cdata.get("name") or game_name),
@@ -660,10 +900,12 @@ class TwitchMiner:
                 parsed_campaigns.append(camp_obj)
                 new_campaigns_by_id[camp_obj.id] = camp_obj
 
-            # Sort active first, then by end time
+            # Sort: in-progress first, then active, then by end time
             parsed_campaigns.sort(
                 key=lambda c: (
-                    0 if c.is_active_time and not c.finished else (1 if not c.finished else 2),
+                    0
+                    if c.is_active_time and not c.finished and any(d.current_minutes > 0 for d in c.drops)
+                    else (1 if c.is_active_time and not c.finished else (2 if not c.finished else 3)),
                     c.ends_at or datetime.max.replace(tzinfo=timezone.utc),
                 )
             )
@@ -671,11 +913,13 @@ class TwitchMiner:
             self._drops_by_id = new_drops_by_id
             self._campaigns_by_id = new_campaigns_by_id
             self._last_inventory_fetch = time.time()
+            self._last_progress_sync = time.time()
 
             self.events.log(
                 f"Fetched {len(self.campaigns)} Twitch campaigns ({sum(1 for c in self.campaigns if c.is_active_time and not c.finished)} active).",
                 platform="twitch",
             )
+            self._update_active_drop_state()
             self.events.emit("campaigns_updated", {"platform": "twitch"})
 
             if self.config.auto_claim:
@@ -683,6 +927,76 @@ class TwitchMiner:
 
         except Exception as e:
             self.events.log(f"Failed to fetch Twitch inventory: {e}", platform="twitch", level="error")
+
+    async def _sync_inventory_progress(self) -> None:
+        """
+        Lightweight 60-second poll of Twitch Inventory to update currentMinutesWatched,
+        dropInstanceID, and claim status across all parallel and sequential drops.
+        """
+        if not self.state.authenticated:
+            return
+        try:
+            inv_resp = await self.gql_request(make_gql("Inventory"))
+            inv_node = (
+                (((inv_resp or {}).get("data") or {}).get("currentUser") or {}).get("inventory")
+                or {}
+            )
+            ongoing_raw = inv_node.get("dropCampaignsInProgress") or []
+            changed = False
+
+            for c_raw in ongoing_raw:
+                if not isinstance(c_raw, dict) or not c_raw.get("id"):
+                    continue
+                cid = str(c_raw["id"])
+                camp = self._campaigns_by_id.get(cid)
+                if camp and isinstance(c_raw.get("self"), dict):
+                    camp.account_linked = bool(
+                        c_raw["self"].get("isAccountConnected", camp.account_linked)
+                    )
+
+                for d_raw in c_raw.get("timeBasedDrops") or []:
+                    if not isinstance(d_raw, dict) or not d_raw.get("id"):
+                        continue
+                    did = str(d_raw["id"])
+                    drop = self._drops_by_id.get(did)
+                    if not drop:
+                        continue
+                    self_edge = d_raw.get("self")
+                    if not isinstance(self_edge, dict):
+                        continue
+
+                    new_mins = int(self_edge.get("currentMinutesWatched") or 0)
+                    new_claimed = bool(self_edge.get("isClaimed", False))
+                    new_claim_id = self_edge.get("dropInstanceID")
+
+                    if new_claim_id and str(new_claim_id) != drop.claim_id:
+                        drop.claim_id = str(new_claim_id)
+                        changed = True
+
+                    if new_claimed and not drop.is_claimed:
+                        drop.is_claimed = True
+                        drop.can_claim = False
+                        drop.current_minutes = drop.required_minutes
+                        changed = True
+                    elif not drop.is_claimed:
+                        if new_mins > drop.current_minutes:
+                            drop.current_minutes = new_mins
+                            changed = True
+                        if (
+                            drop.claim_id
+                            or (drop.current_minutes >= drop.required_minutes > 0)
+                        ):
+                            drop.can_claim = True
+                            if self.config.auto_claim:
+                                if await self.claim_drop(drop):
+                                    changed = True
+
+            self._last_progress_sync = time.time()
+            if changed:
+                self._update_active_drop_state()
+                self.events.emit("campaigns_updated", {"platform": "twitch"})
+        except Exception:
+            pass
 
     async def claim_drop(self, drop: DropReward) -> bool:
         if drop.is_claimed:
@@ -926,91 +1240,194 @@ class TwitchMiner:
         candidates.sort(key=lambda c: (c.acl_based, c.viewers), reverse=True)
         return candidates
 
+    async def send_spade_event(self, channel: ChannelInfo) -> bool:
+        """
+        Sends the Twitch GQL SendEvents (sendSpadeEvents) minute-watched telemetry
+        using GZIP_B64 encoding, matching Twitch's web player & lurkloot.
+        """
+        if not self.state.user_id:
+            return False
+        if not channel.id.isdigit() or not channel.broadcast_id:
+            live_info = await self.check_channel_live(channel.username)
+            if live_info:
+                channel.id = live_info.id
+                channel.broadcast_id = live_info.broadcast_id
+                if live_info.game_id:
+                    channel.game_id = live_info.game_id
+                if live_info.game_name:
+                    channel.game_name = live_info.game_name
+        if not channel.id.isdigit() or not channel.broadcast_id:
+            return False
+
+        try:
+            payload = [
+                {
+                    "event": "minute-watched",
+                    "properties": {
+                        "broadcast_id": str(channel.broadcast_id),
+                        "channel_id": str(channel.id),
+                        "channel": channel.username,
+                        "client_time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "game": channel.game_name or "",
+                        "game_id": str(channel.game_id) if channel.game_id else "",
+                        "hidden": False,
+                        "is_live": True,
+                        "live": True,
+                        "logged_in": True,
+                        "minutes_logged": 1,
+                        "muted": False,
+                        "player": "site",
+                        "user_id": str(self.state.user_id),
+                    },
+                }
+            ]
+            raw_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            compressed = gzip.compress(raw_bytes)
+            b64_data = base64.b64encode(compressed).decode("ascii")
+            resp = await self.gql_request(
+                make_gql(
+                    "SendEvents",
+                    {
+                        "input": {
+                            "data": b64_data,
+                            "repository": "twilight",
+                            "encoding": "GZIP_B64",
+                        }
+                    },
+                )
+            )
+            status = (((resp or {}).get("data") or {}).get("sendSpadeEvents") or {}).get("statusCode")
+            return status == 204
+        except Exception:
+            return False
+
     async def send_watch_ping(self, channel: ChannelInfo) -> bool:
         """
-        Stream-less watch simulation via HLS playlist + HEAD request on chunk,
-        matching DevilXD/TwitchDropsMiner's Channel.send_watch().
+        Stream-less watch simulation via HLS media playlist polling + HEAD requests
+        on unseen live-edge segments + periodic GQL SendEvents minute-watched telemetry.
         """
         session = await self.get_session()
         now = time.time()
-        cached = self._stream_url_cache.get(channel.username)
+        login = channel.username.lower().strip()
+        cached = self._stream_url_cache.get(login)
         stream_url: Optional[str] = None
-        if cached and now - cached[1] < 300:
+        if cached and now - cached[1] < 240:
             stream_url = cached[0]
 
         try:
             if not stream_url:
                 token_resp = await self.gql_request(
                     make_gql(
-                        "PlaybackAccessToken",
-                        {
-                            "isLive": True,
-                            "isVod": False,
-                            "login": channel.username,
-                            "platform": "web",
-                            "playerType": "site",
-                            "vodID": "",
-                        },
+                        "PlaybackAccessTokenInline",
+                        {"login": login, "playerType": "site"},
                     )
                 )
                 token_node = ((token_resp or {}).get("data") or {}).get("streamPlaybackAccessToken")
                 if not token_node:
+                    token_resp = await self.gql_request(
+                        make_gql(
+                            "PlaybackAccessToken",
+                            {
+                                "isLive": True,
+                                "isVod": False,
+                                "login": login,
+                                "platform": "web",
+                                "playerType": "site",
+                                "vodID": "",
+                            },
+                        )
+                    )
+                    token_node = ((token_resp or {}).get("data") or {}).get("streamPlaybackAccessToken")
+                if not token_node:
                     return False
+
                 sig = token_node.get("signature")
                 val = token_node.get("value")
-                usher_url = (
-                    f"https://usher.ttvnw.net/api/channel/hls/{channel.username}.m3u8"
-                    f"?sig={sig}&token={URL.build(query={'t': val}).query_string[2:]}"
+                if not sig or not val:
+                    return False
+
+                usher_url = URL(f"https://usher.ttvnw.net/api/channel/hls/{login}.m3u8").with_query(
+                    {
+                        "allow_audio_only": "true",
+                        "allow_source": "true",
+                        "sig": str(sig),
+                        "token": str(val),
+                    }
                 )
                 async with session.get(
-                    URL(f"https://usher.ttvnw.net/api/channel/hls/{channel.username}.m3u8").with_query(
-                        {"sig": sig, "token": val}
-                    ),
+                    usher_url,
                     proxy=self.config.proxy or None,
                 ) as m3u8_resp:
                     if m3u8_resp.status >= 400:
                         return False
                     m3u8_text = await m3u8_resp.text()
-                lines = [ln.strip() for ln in m3u8_text.strip().splitlines() if ln.strip().startswith("http")]
-                if not lines:
+                    master_base = str(m3u8_resp.url)
+
+                variants = _parse_m3u8_urls(m3u8_text, master_base, "master")
+                if not variants:
                     return False
-                stream_url = lines[-1]
-                self._stream_url_cache[channel.username] = (stream_url, now)
+                stream_url = variants[-1]
+                self._stream_url_cache[login] = (stream_url, now)
 
             async with session.get(
                 stream_url,
-                headers={"Connection": "close"},
+                headers={"Cache-Control": "no-cache"},
                 proxy=self.config.proxy or None,
             ) as chunks_resp:
                 if chunks_resp.status >= 400:
-                    self._stream_url_cache.pop(channel.username, None)
+                    self._stream_url_cache.pop(login, None)
                     return False
                 chunks_text = await chunks_resp.text()
+                media_base = str(chunks_resp.url)
 
-            chunk_urls = [
-                ln.strip()
-                for ln in chunks_text.strip().splitlines()
-                if ln.strip().startswith("http")
-            ]
-            if not chunk_urls:
-                self._stream_url_cache.pop(channel.username, None)
+            segments = _parse_m3u8_urls(chunks_text, media_base, "media")
+            if not segments:
+                self._stream_url_cache.pop(login, None)
                 return False
 
-            async with session.head(
-                chunk_urls[-1],
-                proxy=self.config.proxy or None,
-            ) as head_resp:
-                ok = head_resp.status == 200
-                if ok:
-                    self.state.last_watch_ping = datetime.now(timezone.utc).isoformat()
-                return ok
+            seen_list = self._seen_segments.setdefault(login, [])
+            pending = [seg for seg in segments if seg not in seen_list]
+            batch = pending[-6:] if pending else [segments[-1]]
+
+            headed = 0
+            for seg_url in batch:
+                try:
+                    async with session.head(
+                        seg_url,
+                        proxy=self.config.proxy or None,
+                    ) as head_resp:
+                        if head_resp.status == 200:
+                            headed += 1
+                            if seg_url not in seen_list:
+                                seen_list.append(seg_url)
+                                if len(seen_list) > 256:
+                                    del seen_list[: len(seen_list) - 256]
+                        elif head_resp.status in (401, 403, 404):
+                            self._stream_url_cache.pop(login, None)
+                except Exception:
+                    pass
+
+            ok = headed > 0
+            if ok:
+                self.state.last_watch_ping = datetime.now(timezone.utc).isoformat()
+                last_tel = self._last_telemetry_at.get(login, 0.0)
+                if now - last_tel >= 55.0:
+                    self._last_telemetry_at[login] = now
+                    await self.send_spade_event(channel)
+            return ok
         except Exception:
-            self._stream_url_cache.pop(channel.username, None)
+            self._stream_url_cache.pop(login, None)
             return False
 
     async def poll_current_drop_and_points(self, channel: ChannelInfo) -> None:
         """Queries CurrentDrop and ChannelPointsContext via GQL to sync progress & auto-claim points."""
         try:
+            if not channel.id.isdigit():
+                live_info = await self.check_channel_live(channel.username)
+                if live_info and live_info.id.isdigit():
+                    channel.id = live_info.id
+                    channel.broadcast_id = live_info.broadcast_id
+
             ops: list[dict[str, Any]] = []
             if channel.id.isdigit():
                 ops.append(make_gql("CurrentDrop", {"channelID": str(channel.id), "channelLogin": ""}))
@@ -1032,12 +1449,37 @@ class TwitchMiner:
                         cur_mins = int(session_ctx.get("currentMinutesWatched") or 0)
                         drop = self._drops_by_id.get(did)
                         if drop and not drop.is_claimed:
-                            if cur_mins != drop.current_minutes:
+                            changed = False
+                            if cur_mins > drop.current_minutes:
                                 drop.current_minutes = cur_mins
-                                if drop.current_minutes >= drop.required_minutes > 0:
-                                    drop.can_claim = True
-                                    if self.config.auto_claim:
-                                        await self.claim_drop(drop)
+                                changed = True
+                            if drop.current_minutes >= drop.required_minutes > 0:
+                                drop.can_claim = True
+                                if self.config.auto_claim:
+                                    await self.claim_drop(drop)
+                                changed = True
+
+                            # Also update any parallel unclaimed sibling drops in the same campaign
+                            camp = self._campaigns_by_id.get(drop.campaign_id)
+                            if camp and not drop.precondition_drops:
+                                for sibling in camp.drops:
+                                    if (
+                                        sibling.id != drop.id
+                                        and not sibling.is_claimed
+                                        and not sibling.precondition_drops
+                                        and sibling.required_minutes > 0
+                                    ):
+                                        target_mins = min(sibling.required_minutes, cur_mins)
+                                        if target_mins > sibling.current_minutes:
+                                            sibling.current_minutes = target_mins
+                                            changed = True
+                                        if sibling.current_minutes >= sibling.required_minutes > 0:
+                                            sibling.can_claim = True
+                                            if self.config.auto_claim:
+                                                await self.claim_drop(sibling)
+                                            changed = True
+
+                            if changed:
                                 self._update_active_drop_state()
                                 self.events.emit("campaigns_updated", {"platform": "twitch"})
 
@@ -1317,7 +1759,7 @@ class TwitchMiner:
                                 platform="twitch",
                             )
 
-                # Send watch heartbeat (every 20 seconds)
+                # Send watch heartbeat (every 12 seconds)
                 ch = self.state.watching_channel
                 if ch:
                     self.state.status = MinerStatus.WATCHING
@@ -1344,7 +1786,7 @@ class TwitchMiner:
                                 and not q_item.finished
                                 and q_item.username.lower() == ch.username.lower()
                             ):
-                                q_item.elapsed_seconds += 20
+                                q_item.elapsed_seconds += 12
                                 if (
                                     q_item.target_minutes > 0
                                     and q_item.elapsed_seconds >= q_item.target_minutes * 60
@@ -1359,8 +1801,10 @@ class TwitchMiner:
                                     self._last_channel_check = 0.0
 
                     await self.poll_current_drop_and_points(ch)
+                    if time.time() - self._last_progress_sync >= 55.0:
+                        await self._sync_inventory_progress()
 
-                await self._wait_or_wake(20.0)
+                await self._wait_or_wake(12.0)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
