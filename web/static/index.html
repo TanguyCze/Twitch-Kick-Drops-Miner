@@ -232,17 +232,37 @@
             </div>
 
             <!-- Inline TV Device Login Banner (When Active) -->
-            <div id="kick-auth-flow-box" class="hidden bg-emerald-950/40 border border-kick/40 rounded-xl p-3.5 space-y-2">
+            <div id="kick-auth-flow-box" class="hidden bg-emerald-950/40 border border-kick/40 rounded-xl p-4 space-y-3">
               <div class="flex items-center justify-between">
-                <span class="text-xs font-semibold text-kick">📺 Activate Kick TV Link</span>
-                <a id="kick-verify-link" href="https://kick.com/tv/login" target="_blank" class="text-xs font-bold text-slate-950 bg-kick hover:bg-kick-hover px-3 py-1 rounded-lg transition">
-                  Open kick.com/tv/login ↗
-                </a>
+                <span class="text-xs font-bold text-kick">🟢 Link Kick Account (Code: <code id="kick-user-code" class="font-mono font-black">------</code>)</span>
+                <span class="text-[11px] text-emerald-300 animate-pulse">Polling for approval...</span>
               </div>
-              <div class="flex items-center justify-between bg-slate-950/80 px-3 py-2 rounded-lg border border-kick/20">
-                <span class="text-xs text-slate-400">6-Digit Code:</span>
-                <code id="kick-user-code" class="text-base font-mono font-black tracking-widest text-kick select-all">------</code>
-                <button onclick="copyText(document.getElementById('kick-user-code').innerText)" class="text-xs text-slate-300 hover:text-white px-2 py-0.5 bg-slate-800 rounded">Copy</button>
+
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-950/85 p-3 rounded-xl border border-kick/20">
+                <!-- QR Code for Mobile App -->
+                <div class="flex flex-col items-center justify-center bg-white p-2 rounded-lg">
+                  <img id="kick-qr-img" src="" alt="Kick TV QR" class="w-28 h-28 object-contain" />
+                  <span class="text-[10px] font-bold text-slate-900 mt-1">📱 Scan w/ Kick App</span>
+                </div>
+
+                <!-- PC Browser Instructions -->
+                <div class="sm:col-span-2 flex flex-col justify-between space-y-2 text-xs">
+                  <div class="text-slate-300 leading-relaxed">
+                    <strong class="text-white">On PC Browser?</strong> (<code class="text-amber-300">/tv/login</code> only works in the Kick Mobile App). To link from your PC browser:
+                  </div>
+                  <ol class="list-decimal list-inside text-[11px] text-slate-300 space-y-1">
+                    <li>Open <a href="https://kick.com" target="_blank" class="text-kick underline font-semibold">kick.com ↗</a> (make sure you're signed in).</li>
+                    <li>Drag <a id="kick-bookmarklet" href="#" class="inline-block px-2 py-0.5 bg-kick text-slate-950 font-bold rounded cursor-move" title="Drag me to your Bookmarks Bar, then click me while on kick.com!">⚡ Link Kick to Miner</a> to your Bookmarks Bar &amp; click it on <code class="text-slate-200">kick.com</code> — <strong>OR</strong> click below to copy the command for <code class="text-slate-200">F12 → Console</code>:</li>
+                  </ol>
+                  <div class="flex flex-wrap gap-2 pt-1">
+                    <button onclick="copyKickConsoleScript()" class="px-3 py-1.5 bg-kick hover:bg-kick-hover text-slate-950 font-bold rounded-lg text-xs transition">
+                      📋 Copy PC Console Command
+                    </button>
+                    <button onclick="openModal('auth-modal')" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs border border-slate-700">
+                      Paste Token Manually
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -516,14 +536,17 @@
           </div>
 
           <div class="space-y-2">
-            <p class="text-xs text-slate-400">Option 1 (Recommended for Linux): Smart-TV Link Activation Code</p>
+            <p class="text-xs text-slate-400">Option 1: QR Code (Kick Mobile App) or 1-Click PC Browser Linker</p>
             <button onclick="startKickTvAuth()" class="w-full py-2 bg-kick hover:bg-kick-hover text-slate-950 rounded-xl text-xs font-bold transition">
-              Generate Kick TV Link Code
+              Generate Kick QR / PC Link Code
             </button>
           </div>
 
           <div class="border-t border-slate-800 pt-3 space-y-2">
-            <p class="text-xs text-slate-400">Option 2: Paste Kick <code class="text-kick">session_token</code> cookie or <code class="text-kick">cookies.json</code></p>
+            <div class="flex items-center justify-between">
+              <p class="text-xs text-slate-400">Option 2: Paste Kick <code class="text-kick">session_token</code> or <code class="text-kick">cookies.json</code></p>
+              <button onclick="copyKickTokenExtractor()" class="text-[11px] text-kick hover:underline" title="Copy 1-line script to run in F12 Console on kick.com">📋 Copy F12 Extractor</button>
+            </div>
             <input type="password" id="input-kick-token" placeholder="Paste session_token value..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white" />
             <textarea id="input-kick-cookies" rows="2" placeholder="Or paste exported cookies.json array here..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white font-mono"></textarea>
             <div class="flex gap-2">
@@ -680,7 +703,19 @@
       if (state.auth_flow && state.auth_flow.user_code) {
         flowBox.classList.remove('hidden');
         document.getElementById(`${prefix}-user-code`).innerText = state.auth_flow.user_code;
-        document.getElementById(`${prefix}-verify-link`).href = state.auth_flow.verification_uri;
+        if (prefix === 'twitch') {
+          const verifyLink = document.getElementById('twitch-verify-link');
+          if (verifyLink) verifyLink.href = state.auth_flow.verification_uri;
+        } else if (prefix === 'kick') {
+          const qrImg = document.getElementById('kick-qr-img');
+          if (qrImg) {
+            qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(state.auth_flow.verification_uri)}`;
+          }
+          const bm = document.getElementById('kick-bookmarklet');
+          if (bm) {
+            bm.href = `javascript:${encodeURIComponent(buildKickLinkScript(state.auth_flow.uuid, state.auth_flow.user_code))}`;
+          }
+        }
       } else {
         flowBox.classList.add('hidden');
       }
@@ -1221,6 +1256,27 @@
       }
     }
 
+    function buildKickLinkScript(uuid, code) {
+      return `(async()=>{const m=document.cookie.match(/(?:^|;\\s*)session_token=([^;]+)/);if(!m){alert('Please log in to kick.com first!');return;}const t=decodeURIComponent(m[1]);try{await navigator.clipboard.writeText(t);}catch(e){}const r=await fetch('https://kick.com/api/tv/link/setup',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json','Authorization':'Bearer '+t},body:JSON.stringify({uuid:'${uuid}',key:'${code}'})});if(r.ok){alert('✅ Kick Linked! Your Drops Miner will connect automatically within 5 seconds.');}else{prompt('Copy this Kick session_token and paste it into Drops Miner:',t);}})();`;
+    }
+
+    function copyKickConsoleScript() {
+      const flow = appState.kick?.auth_flow;
+      if (!flow || !flow.uuid || !flow.user_code) {
+        copyKickTokenExtractor();
+        return;
+      }
+      const script = buildKickLinkScript(flow.uuid, flow.user_code);
+      navigator.clipboard.writeText(script);
+      showToast('Copied! Open kick.com, press F12 -> Console, paste & press Enter.');
+    }
+
+    function copyKickTokenExtractor() {
+      const script = `(()=>{const m=document.cookie.match(/(?:^|;\\s*)session_token=([^;]+)/);if(!m){alert('Log in to kick.com first!');return;}const t=decodeURIComponent(m[1]);prompt('Copy your Kick session_token below:',t);})();`;
+      navigator.clipboard.writeText(script);
+      showToast('Copied! On kick.com press F12 -> Console, paste & press Enter to get your session_token.');
+    }
+
     async function startKickTvAuth() {
       const res = await fetch('/api/auth/kick/tv', { method: 'POST' });
       const data = await res.json();
@@ -1228,7 +1284,7 @@
         appState.kick.auth_flow = data.flow;
         renderDashboard();
         closeModal('auth-modal');
-        showToast(`Confirm Kick TV code ${data.flow.user_code}`);
+        showToast('Scan QR with Kick Mobile App OR use the PC Console Command!');
       }
     }
 
