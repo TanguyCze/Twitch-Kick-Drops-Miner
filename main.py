@@ -14,7 +14,13 @@ import sys
 from pathlib import Path
 
 # Ensure local user site-packages (used by Pterodactyl Python eggs in /home/container/.local) are on sys.path
-local_site = Path(__file__).resolve().parent / ".local" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+local_site = (
+    Path(__file__).resolve().parent
+    / ".local"
+    / "lib"
+    / f"python{sys.version_info.major}.{sys.version_info.minor}"
+    / "site-packages"
+)
 if local_site.exists() and str(local_site) not in sys.path:
     site.addsitedir(str(local_site))
 
@@ -68,9 +74,11 @@ def main() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    data_dir = Path(args.data_dir).resolve()
+    os.environ["MINER_DATA_DIR"] = str(data_dir)
+
     from web.server import create_app
 
-    data_dir = Path(args.data_dir).resolve()
     app = create_app(data_dir=data_dir)
 
     print(

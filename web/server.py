@@ -431,3 +431,9 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         pass
     finally:
         orchestrator.events.unsubscribe(queue)
+
+
+def create_app(data_dir: Optional[Path] = None) -> FastAPI:
+    """Return the configured FastAPI application."""
+    return app
+
