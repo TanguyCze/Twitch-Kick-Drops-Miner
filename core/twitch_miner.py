@@ -27,12 +27,28 @@ from .models import (
     PriorityMode,
 )
 
+TWITCH_DEVICE_CLIENT_ID = "ue6666qo983tsx6so1t0vnawi233wa"
+TWITCH_DEVICE_UA = (
+    "Mozilla/5.0 (Linux; Android 7.1; Smart Box C1) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+TWITCH_DEVICE_URL = "https://android.tv.twitch.tv"
+
 TWITCH_ANDROID_CLIENT_ID = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp"
 TWITCH_ANDROID_UA = (
     "Dalvik/2.1.0 (Linux; U; Android 16; SM-S938B Build/BP2A.250605.031) "
     "tv.twitch.android.app/25.3.0/2503006"
 )
 TWITCH_CLIENT_URL = "https://www.twitch.tv"
+
+CLIENT_PROFILES: dict[str, tuple[str, str]] = {
+    TWITCH_DEVICE_CLIENT_ID: (TWITCH_DEVICE_URL, TWITCH_DEVICE_UA),
+    TWITCH_ANDROID_CLIENT_ID: (TWITCH_CLIENT_URL, TWITCH_ANDROID_UA),
+    "kimne78kx3ncx6brgo4mv6wki5h1ko": (
+        TWITCH_CLIENT_URL,
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    ),
+}
 DIMS_PATTERN = re.compile(r"-\d+x\d+(?=\.(?:jpg|png|gif)$)", re.I)
 
 GQL_QUERIES: dict[str, dict[str, Any]] = {
@@ -211,7 +227,7 @@ class TwitchMiner:
             self._session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=connector,
-                headers={"User-Agent": TWITCH_ANDROID_UA},
+                headers={"User-Agent": TWITCH_DEVICE_UA},
             )
         return self._session
 
@@ -227,16 +243,21 @@ class TwitchMiner:
 
     def _gql_headers(self) -> dict[str, str]:
         device_id, session_id = self._ensure_ids()
-        token = self.config.credentials["twitch"].get("access_token", "")
+        creds = self.config.credentials["twitch"]
+        token = creds.get("access_token", "")
+        client_id = creds.get("client_id") or TWITCH_DEVICE_CLIENT_ID
+        client_url, user_agent = CLIENT_PROFILES.get(
+            client_id, (TWITCH_DEVICE_URL, TWITCH_DEVICE_UA)
+        )
         headers = {
             "Accept": "*/*",
             "Accept-Language": "en-US",
-            "Client-Id": TWITCH_ANDROID_CLIENT_ID,
+            "Client-Id": client_id,
             "Client-Session-Id": session_id,
             "X-Device-Id": device_id,
-            "Origin": TWITCH_CLIENT_URL,
-            "Referer": TWITCH_CLIENT_URL,
-            "User-Agent": TWITCH_ANDROID_UA,
+            "Origin": client_url,
+            "Referer": client_url,
+            "User-Agent": user_agent,
         }
         if token:
             headers["Authorization"] = f"OAuth {token}"
@@ -261,6 +282,8 @@ class TwitchMiner:
                     data = await resp.json()
                     creds["user_id"] = str(data.get("user_id", ""))
                     creds["username"] = str(data.get("login", ""))
+                    if data.get("client_id"):
+                        creds["client_id"] = str(data["client_id"])
                     self.config.save_credentials()
                     self.state.authenticated = True
                     self.state.user_id = creds["user_id"]
@@ -288,11 +311,15 @@ class TwitchMiner:
         session = await self.get_session()
         headers = {
             "Accept": "application/json",
-            "Client-Id": TWITCH_ANDROID_CLIENT_ID,
-            "User-Agent": TWITCH_ANDROID_UA,
+            "Accept-Language": "en-US",
+            "Cache-Control": "no-cache",
+            "Client-Id": TWITCH_DEVICE_CLIENT_ID,
+            "Origin": TWITCH_DEVICE_URL,
+            "Referer": TWITCH_DEVICE_URL,
+            "User-Agent": TWITCH_DEVICE_UA,
             "X-Device-Id": device_id,
         }
-        payload = {"client_id": TWITCH_ANDROID_CLIENT_ID, "scopes": ""}
+        payload = {"client_id": TWITCH_DEVICE_CLIENT_ID, "scopes": ""}
         async with session.post(
             "https://id.twitch.tv/oauth2/device",
             headers=headers,
@@ -326,7 +353,7 @@ class TwitchMiner:
         async def _poll() -> None:
             deadline = time.time() + expires_in
             token_payload = {
-                "client_id": TWITCH_ANDROID_CLIENT_ID,
+                "client_id": TWITCH_DEVICE_CLIENT_ID,
                 "device_code": device_code,
                 "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
             }
@@ -344,6 +371,7 @@ class TwitchMiner:
                             access_token = token_data.get("access_token")
                             if access_token:
                                 self.config.credentials["twitch"]["access_token"] = access_token
+                                self.config.credentials["twitch"]["client_id"] = TWITCH_DEVICE_CLIENT_ID
                                 self.config.save_credentials()
                                 await self.validate_auth()
                                 self.events.log(

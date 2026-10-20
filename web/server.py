@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -103,6 +103,11 @@ class SettingsUpdateRequest(BaseModel):
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> Response:
+    return Response(status_code=204)
 
 
 @app.get("/api/status")
@@ -363,6 +368,7 @@ async def twitch_device_auth() -> dict[str, Any]:
         flow = await orchestrator.twitch.start_device_login()
         return {"ok": True, "flow": flow}
     except Exception as e:
+        orchestrator.events.log(f"Twitch device login error: {e}", platform="twitch", level="error")
         raise HTTPException(status_code=500, detail=str(e))
 
 
