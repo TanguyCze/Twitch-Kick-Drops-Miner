@@ -1,0 +1,1335 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Twitch & Kick Drops Miner</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            twitch: { DEFAULT: '#9146FF', hover: '#772CE8', soft: 'rgba(145, 70, 255, 0.14)' },
+            kick: { DEFAULT: '#53FC18', hover: '#3fd90b', soft: 'rgba(83, 252, 24, 0.14)' },
+            panel: '#111827',
+            card: '#1e293b',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #0b0f19;
+      color: #f1f5f9;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    .glow-twitch { box-shadow: 0 0 25px -5px rgba(145, 70, 255, 0.25); }
+    .glow-kick { box-shadow: 0 0 25px -5px rgba(83, 252, 24, 0.2); }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- Top Navbar -->
+  <header class="sticky top-0 z-30 bg-slate-900/90 backdrop-blur border-b border-slate-800 px-4 lg:px-8 py-3">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-twitch to-kick p-[2px]">
+          <div class="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center font-black text-lg tracking-tighter">
+            <span class="text-twitch">T</span><span class="text-kick">K</span>
+          </div>
+        </div>
+        <div>
+          <h1 class="font-bold text-lg leading-tight flex items-center gap-2">
+            Twitch & Kick Drops Miner
+            <span id="ws-badge" class="text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30">Connecting...</span>
+          </h1>
+          <p class="text-xs text-slate-400">Stream-less Auto-Miner • Auto-Claim • Auto-Switch • Priority Queue</p>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <nav class="flex items-center gap-1 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
+        <button onclick="switchTab('dashboard')" id="tab-btn-dashboard" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition bg-slate-800 text-white">
+          ⚡ Dashboard
+        </button>
+        <button onclick="switchTab('campaigns')" id="tab-btn-campaigns" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition text-slate-400 hover:text-white">
+          🎁 Campaigns (<span id="nav-campaign-count">0</span>)
+        </button>
+        <button onclick="switchTab('priority')" id="tab-btn-priority" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition text-slate-400 hover:text-white">
+          📋 Priority & Queue
+        </button>
+        <button onclick="switchTab('claims')" id="tab-btn-claims" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition text-slate-400 hover:text-white">
+          🏆 Claims & Logs
+        </button>
+      </nav>
+
+      <!-- Action Buttons -->
+      <div class="flex items-center gap-2">
+        <button onclick="refreshAllCampaigns()" id="btn-refresh-all" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition flex items-center gap-1.5">
+          <span>🔄</span> Refresh
+        </button>
+        <button onclick="claimAllReady()" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 transition flex items-center gap-1.5">
+          <span>✨</span> Claim Ready
+        </button>
+        <button onclick="openModal('auth-modal')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 transition flex items-center gap-1.5">
+          <span>🔑</span> Accounts
+        </button>
+        <button onclick="openModal('settings-modal')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">
+          ⚙️ Settings
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6 space-y-6">
+
+    <!-- TAB 1: DASHBOARD -->
+    <section id="tab-dashboard" class="space-y-6">
+
+      <!-- Quick Toggles Bar -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+          <div>
+            <div class="text-xs text-slate-400">Auto-Claim Drops</div>
+            <div class="text-sm font-bold text-white" id="stat-autoclaim">Enabled</div>
+          </div>
+          <input type="checkbox" id="toggle-auto-claim" onchange="toggleQuickSetting('auto_claim', this.checked)" class="w-4 h-4 accent-emerald-500 rounded cursor-pointer" />
+        </div>
+        <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+          <div>
+            <div class="text-xs text-slate-400">Auto-Switch Stream</div>
+            <div class="text-sm font-bold text-white" id="stat-autoswitch">Enabled</div>
+          </div>
+          <input type="checkbox" id="toggle-auto-switch" onchange="toggleQuickSetting('auto_switch', this.checked)" class="w-4 h-4 accent-emerald-500 rounded cursor-pointer" />
+        </div>
+        <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+          <div>
+            <div class="text-xs text-slate-400">Twitch Bonus Points</div>
+            <div class="text-sm font-bold text-twitch" id="stat-points">0 claimed</div>
+          </div>
+          <input type="checkbox" id="toggle-auto-points" onchange="toggleQuickSetting('auto_claim_points', this.checked)" class="w-4 h-4 accent-purple-500 rounded cursor-pointer" />
+        </div>
+        <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+          <div>
+            <div class="text-xs text-slate-400">Total Drops Claimed</div>
+            <div class="text-sm font-bold text-emerald-400" id="stat-total-claims">0 rewards</div>
+          </div>
+          <span class="text-xl">🎁</span>
+        </div>
+      </div>
+
+      <!-- Dual Platform Live Miner Cards -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <!-- TWITCH MINER CARD -->
+        <div class="bg-slate-900/95 border border-purple-500/30 rounded-2xl p-5 glow-twitch flex flex-col justify-between space-y-4">
+          <div class="space-y-4">
+            <!-- Header -->
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div class="w-9 h-9 rounded-lg bg-twitch/20 border border-twitch/40 flex items-center justify-center text-twitch font-black text-lg">
+                  T
+                </div>
+                <div>
+                  <div class="flex items-center gap-2">
+                    <h2 class="font-bold text-base text-white">Twitch Miner</h2>
+                    <span id="twitch-status-badge" class="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-slate-800 text-slate-300">IDLE</span>
+                  </div>
+                  <p id="twitch-status-msg" class="text-xs text-slate-400 truncate max-w-xs sm:max-w-md">Initializing...</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <span id="twitch-auth-pill" class="text-xs px-2.5 py-1 rounded-lg bg-slate-800 text-slate-400 border border-slate-700">Not signed in</span>
+                <label class="inline-flex items-center cursor-pointer" title="Enable/Pause Twitch Miner">
+                  <input type="checkbox" id="toggle-twitch-enabled" onchange="toggleQuickSetting('twitch_enabled', this.checked)" class="sr-only peer" checked>
+                  <div class="w-9 h-5 bg-slate-700 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all relative peer-checked:bg-twitch"></div>
+                </label>
+              </div>
+            </div>
+
+            <!-- Inline Device Login Banner (When Active) -->
+            <div id="twitch-auth-flow-box" class="hidden bg-purple-950/40 border border-purple-500/40 rounded-xl p-3.5 space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-purple-300">🔑 Activate Twitch Device Code</span>
+                <a id="twitch-verify-link" href="https://www.twitch.tv/activate" target="_blank" class="text-xs font-bold text-white bg-twitch hover:bg-twitch-hover px-3 py-1 rounded-lg transition">
+                  Open twitch.tv/activate ↗
+                </a>
+              </div>
+              <div class="flex items-center justify-between bg-slate-950/80 px-3 py-2 rounded-lg border border-purple-500/20">
+                <span class="text-xs text-slate-400">Code:</span>
+                <code id="twitch-user-code" class="text-base font-mono font-black tracking-widest text-purple-300 select-all">--------</code>
+                <button onclick="copyText(document.getElementById('twitch-user-code').innerText)" class="text-xs text-slate-300 hover:text-white px-2 py-0.5 bg-slate-800 rounded">Copy</button>
+              </div>
+            </div>
+
+            <!-- Active Stream Box -->
+            <div class="bg-slate-950/70 border border-slate-800/90 rounded-xl p-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Active Stream</span>
+                <div class="flex items-center gap-2">
+                  <span id="twitch-last-ping" class="text-[11px] text-slate-500">HLS Stream-less</span>
+                  <button onclick="forceSwitchChannel('twitch')" class="text-xs px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition" title="Re-evaluate & switch to best channel">
+                    ⏭️ Auto-Switch
+                  </button>
+                </div>
+              </div>
+              <div id="twitch-channel-box" class="flex items-center justify-between">
+                <div class="text-xs text-slate-500 py-2">No channel currently being watched</div>
+              </div>
+            </div>
+
+            <!-- Active Drop Progress Box -->
+            <div class="bg-slate-950/70 border border-slate-800/90 rounded-xl p-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Current Drop Progress</span>
+                <span id="twitch-drop-eta" class="text-xs font-semibold text-purple-400"></span>
+              </div>
+              <div id="twitch-drop-box">
+                <div class="text-xs text-slate-500 py-2">Waiting for active drop session...</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Footer Actions -->
+          <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+            <span>Method: <strong class="text-slate-300">Zero-Bandwidth HLS HEAD</strong></span>
+            <button onclick="openModal('auth-modal')" class="text-purple-400 hover:text-purple-300 font-semibold">Manage Twitch Auth →</button>
+          </div>
+        </div>
+
+        <!-- KICK MINER CARD -->
+        <div class="bg-slate-900/95 border border-kick/30 rounded-2xl p-5 glow-kick flex flex-col justify-between space-y-4">
+          <div class="space-y-4">
+            <!-- Header -->
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div class="w-9 h-9 rounded-lg bg-kick/15 border border-kick/40 flex items-center justify-center text-kick font-black text-lg">
+                  K
+                </div>
+                <div>
+                  <div class="flex items-center gap-2">
+                    <h2 class="font-bold text-base text-white">Kick Miner</h2>
+                    <span id="kick-status-badge" class="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-slate-800 text-slate-300">IDLE</span>
+                  </div>
+                  <p id="kick-status-msg" class="text-xs text-slate-400 truncate max-w-xs sm:max-w-md">Initializing...</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <span id="kick-auth-pill" class="text-xs px-2.5 py-1 rounded-lg bg-slate-800 text-slate-400 border border-slate-700">Not signed in</span>
+                <label class="inline-flex items-center cursor-pointer" title="Enable/Pause Kick Miner">
+                  <input type="checkbox" id="toggle-kick-enabled" onchange="toggleQuickSetting('kick_enabled', this.checked)" class="sr-only peer" checked>
+                  <div class="w-9 h-5 bg-slate-700 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-950 after:rounded-full after:h-4 after:w-4 after:transition-all relative peer-checked:bg-kick"></div>
+                </label>
+              </div>
+            </div>
+
+            <!-- Inline TV Device Login Banner (When Active) -->
+            <div id="kick-auth-flow-box" class="hidden bg-emerald-950/40 border border-kick/40 rounded-xl p-3.5 space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-kick">📺 Activate Kick TV Link</span>
+                <a id="kick-verify-link" href="https://kick.com/tv/login" target="_blank" class="text-xs font-bold text-slate-950 bg-kick hover:bg-kick-hover px-3 py-1 rounded-lg transition">
+                  Open kick.com/tv/login ↗
+                </a>
+              </div>
+              <div class="flex items-center justify-between bg-slate-950/80 px-3 py-2 rounded-lg border border-kick/20">
+                <span class="text-xs text-slate-400">6-Digit Code:</span>
+                <code id="kick-user-code" class="text-base font-mono font-black tracking-widest text-kick select-all">------</code>
+                <button onclick="copyText(document.getElementById('kick-user-code').innerText)" class="text-xs text-slate-300 hover:text-white px-2 py-0.5 bg-slate-800 rounded">Copy</button>
+              </div>
+            </div>
+
+            <!-- Active Stream Box -->
+            <div class="bg-slate-950/70 border border-slate-800/90 rounded-xl p-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Active Stream</span>
+                <div class="flex items-center gap-2">
+                  <span id="kick-last-ping" class="text-[11px] text-slate-500">Viewer WebSocket</span>
+                  <button onclick="forceSwitchChannel('kick')" class="text-xs px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition" title="Re-evaluate & switch to best channel">
+                    ⏭️ Auto-Switch
+                  </button>
+                </div>
+              </div>
+              <div id="kick-channel-box" class="flex items-center justify-between">
+                <div class="text-xs text-slate-500 py-2">No channel currently being watched</div>
+              </div>
+            </div>
+
+            <!-- Active Drop Progress Box -->
+            <div class="bg-slate-950/70 border border-slate-800/90 rounded-xl p-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Current Drop Progress</span>
+                <span id="kick-drop-eta" class="text-xs font-semibold text-kick"></span>
+              </div>
+              <div id="kick-drop-box">
+                <div class="text-xs text-slate-500 py-2">Waiting for active drop session...</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Footer Actions -->
+          <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+            <span>Method: <strong class="text-slate-300">Zero-Bandwidth Viewer WS + TLS Impersonation</strong></span>
+            <button onclick="openModal('auth-modal')" class="text-kick hover:underline font-semibold">Manage Kick Auth →</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom Split: Live Console & Recent Claims -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Live Console Log -->
+        <div class="lg:col-span-2 bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex flex-col h-80">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-bold text-sm flex items-center gap-2">
+              <span>📡</span> Real-Time Activity Log
+            </h3>
+            <div class="flex items-center gap-1">
+              <button onclick="setLogFilter('all')" id="log-filter-all" class="log-filter-btn text-[11px] px-2 py-0.5 rounded bg-slate-700 text-white">All</button>
+              <button onclick="setLogFilter('twitch')" id="log-filter-twitch" class="log-filter-btn text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-400">Twitch</button>
+              <button onclick="setLogFilter('kick')" id="log-filter-kick" class="log-filter-btn text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-400">Kick</button>
+            </div>
+          </div>
+          <div id="dashboard-log-box" class="flex-1 overflow-y-auto font-mono text-xs space-y-1.5 bg-slate-950/90 p-3 rounded-xl border border-slate-800/80">
+          </div>
+        </div>
+
+        <!-- Recent Claims -->
+        <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex flex-col h-80">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-bold text-sm flex items-center gap-2">
+              <span>🏆</span> Recent Claimed Drops
+            </h3>
+            <button onclick="switchTab('claims')" class="text-xs text-indigo-400 hover:underline">View All</button>
+          </div>
+          <div id="dashboard-claims-box" class="flex-1 overflow-y-auto space-y-2 pr-1">
+            <div class="text-xs text-slate-500 text-center py-10">No drops claimed yet in this history</div>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- TAB 2: CAMPAIGNS & INVENTORY -->
+    <section id="tab-campaigns" class="hidden space-y-5">
+      <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <button onclick="setCampaignFilter('platform', 'all')" id="camp-plat-all" class="camp-plat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white">All Platforms</button>
+          <button onclick="setCampaignFilter('platform', 'twitch')" id="camp-plat-twitch" class="camp-plat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:bg-slate-700">🟣 Twitch</button>
+          <button onclick="setCampaignFilter('platform', 'kick')" id="camp-plat-kick" class="camp-plat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:bg-slate-700">🟢 Kick</button>
+
+          <div class="h-5 w-[1px] bg-slate-700 mx-1"></div>
+
+          <button onclick="setCampaignFilter('status', 'active')" id="camp-stat-active" class="camp-stat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-white">Active & In-Progress</button>
+          <button onclick="setCampaignFilter('status', 'all')" id="camp-stat-all" class="camp-stat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400">All (Incl. Completed)</button>
+        </div>
+
+        <div class="flex items-center gap-2 w-full sm:w-auto">
+          <input
+            type="text"
+            id="campaign-search"
+            oninput="renderCampaigns()"
+            placeholder="Search game or campaign..."
+            class="w-full sm:w-64 bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+          />
+        </div>
+      </div>
+
+      <div id="campaigns-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      </div>
+    </section>
+
+    <!-- TAB 3: PRIORITY QUEUE & MANUAL STREAM QUEUE -->
+    <section id="tab-priority" class="hidden space-y-6">
+
+      <!-- Priority Mode Banner -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h3 class="font-bold text-base text-white">🎯 Priority Engine Mode</h3>
+          <p class="text-xs text-slate-400">Controls how the bot ranks eligible drop campaigns when choosing which stream to mine.</p>
+        </div>
+        <div class="flex items-center gap-3">
+          <select id="select-priority-mode" onchange="updatePriorityMode(this.value)" class="bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs font-semibold text-white focus:outline-none focus:border-indigo-500">
+            <option value="priority_first">Priority List First → Then Ending Soonest (Recommended)</option>
+            <option value="priority_only">Priority List Only (Ignore unlisted games)</option>
+            <option value="ending_soonest">Ending Soonest First</option>
+            <option value="low_availability">Lowest Availability Window First</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Priority Lists Grid -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        <!-- Twitch Priority List -->
+        <div class="bg-slate-900/90 border border-purple-500/30 rounded-2xl p-5 space-y-4 flex flex-col">
+          <div>
+            <h3 class="font-bold text-sm text-white flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-twitch"></span> Twitch Game Priority Queue
+            </h3>
+            <p class="text-xs text-slate-400 mt-0.5">Games at the top are mined first on Twitch.</p>
+          </div>
+
+          <div class="flex gap-2">
+            <input type="text" id="input-twitch-prio" list="datalist-twitch-games" placeholder="Add Twitch game name..." class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white" />
+            <datalist id="datalist-twitch-games"></datalist>
+            <button onclick="modifyPriorityGame('twitch', document.getElementById('input-twitch-prio').value, 'add'); document.getElementById('input-twitch-prio').value='';" class="px-3 py-1.5 bg-twitch hover:bg-twitch-hover text-white rounded-xl text-xs font-bold transition">
+              + Add
+            </button>
+          </div>
+
+          <div id="list-twitch-prio" class="flex-1 space-y-1.5 max-h-80 overflow-y-auto pr-1"></div>
+        </div>
+
+        <!-- Kick Priority List -->
+        <div class="bg-slate-900/90 border border-kick/30 rounded-2xl p-5 space-y-4 flex flex-col">
+          <div>
+            <h3 class="font-bold text-sm text-white flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-kick"></span> Kick Game Priority Queue
+            </h3>
+            <p class="text-xs text-slate-400 mt-0.5">Games at the top are mined first on Kick.</p>
+          </div>
+
+          <div class="flex gap-2">
+            <input type="text" id="input-kick-prio" list="datalist-kick-games" placeholder="Add Kick game name..." class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white" />
+            <datalist id="datalist-kick-games"></datalist>
+            <button onclick="modifyPriorityGame('kick', document.getElementById('input-kick-prio').value, 'add'); document.getElementById('input-kick-prio').value='';" class="px-3 py-1.5 bg-kick hover:bg-kick-hover text-slate-950 rounded-xl text-xs font-bold transition">
+              + Add
+            </button>
+          </div>
+
+          <div id="list-kick-prio" class="flex-1 space-y-1.5 max-h-80 overflow-y-auto pr-1"></div>
+        </div>
+
+        <!-- Excluded Games List -->
+        <div class="bg-slate-900/90 border border-rose-500/30 rounded-2xl p-5 space-y-4 flex flex-col">
+          <div>
+            <h3 class="font-bold text-sm text-white flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span> Excluded Games (Both Platforms)
+            </h3>
+            <p class="text-xs text-slate-400 mt-0.5">Campaigns for these games will be skipped.</p>
+          </div>
+
+          <div class="flex gap-2">
+            <input type="text" id="input-exclude-game" placeholder="Exclude game name..." class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white" />
+            <button onclick="modifyPriorityGame('exclude', document.getElementById('input-exclude-game').value, 'add'); document.getElementById('input-exclude-game').value='';" class="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition">
+              Block
+            </button>
+          </div>
+
+          <div id="list-exclude-games" class="flex-1 space-y-1.5 max-h-80 overflow-y-auto pr-1"></div>
+        </div>
+      </div>
+
+      <!-- Manual Channel Watch Queue (KickDropsMiner style + Twitch) -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h3 class="font-bold text-base text-white flex items-center gap-2">
+              <span>📺</span> Manual Stream Watch Queue
+            </h3>
+            <p class="text-xs text-slate-400">Queue specific Kick or Twitch channel URLs with target watch minutes (0 = infinite). Automatically skips offline channels and switches to alternatives.</p>
+          </div>
+          <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+            <input type="checkbox" id="toggle-prefer-manual-queue" onchange="toggleQuickSetting('prefer_manual_queue', this.checked)" class="w-4 h-4 accent-indigo-500 rounded" />
+            Prioritize Manual Queue before Auto-Discovery
+          </label>
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+          <input type="text" id="queue-url-input" placeholder="https://kick.com/streamer or https://twitch.tv/streamer" class="flex-1 min-w-[240px] bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white" />
+          <input type="number" id="queue-mins-input" value="120" min="0" placeholder="Minutes (0=inf)" class="w-32 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+          <button onclick="addManualQueueItem()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition">
+            + Add Channel to Queue
+          </button>
+        </div>
+
+        <div id="manual-queue-list" class="space-y-2"></div>
+      </div>
+
+    </section>
+
+    <!-- TAB 4: CLAIMS & LOGS -->
+    <section id="tab-claims" class="hidden space-y-6">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 space-y-4">
+          <h3 class="font-bold text-base text-white">🏆 Claimed Rewards History</h3>
+          <div id="full-claims-list" class="space-y-2.5 max-h-[550px] overflow-y-auto pr-1"></div>
+        </div>
+        <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 space-y-4">
+          <h3 class="font-bold text-base text-white">📜 Full System Log</h3>
+          <div id="full-logs-list" class="font-mono text-xs space-y-1.5 bg-slate-950 p-3.5 rounded-xl border border-slate-800 max-h-[550px] overflow-y-auto"></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ACCOUNTS / AUTH MODAL -->
+  <div id="auth-modal" class="fixed inset-0 z-50 hidden bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 space-y-6 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h2 class="font-bold text-lg text-white">🔑 Platform Accounts & Authentication</h2>
+        <button onclick="closeModal('auth-modal')" class="text-slate-400 hover:text-white text-lg">✕</button>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- Twitch Auth Column -->
+        <div class="bg-slate-950/80 border border-purple-500/30 rounded-xl p-4 space-y-4">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-sm text-twitch">🟣 Twitch Account</span>
+            <span id="modal-twitch-status" class="text-xs text-slate-400">Not connected</span>
+          </div>
+
+          <div class="space-y-2">
+            <p class="text-xs text-slate-400">Option 1 (Recommended): 1-Click OAuth Device Activation Code</p>
+            <button onclick="startTwitchDeviceAuth()" class="w-full py-2 bg-twitch hover:bg-twitch-hover text-white rounded-xl text-xs font-bold transition">
+              Generate Twitch Activation Code
+            </button>
+          </div>
+
+          <div class="border-t border-slate-800 pt-3 space-y-2">
+            <p class="text-xs text-slate-400">Option 2: Paste Twitch <code class="text-purple-300">auth-token</code> cookie value</p>
+            <input type="password" id="input-twitch-token" placeholder="Paste 30-char auth-token..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white" />
+            <div class="flex gap-2">
+              <button onclick="saveTwitchManualToken()" class="flex-1 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold border border-slate-700">
+                Save Token
+              </button>
+              <button onclick="logoutPlatform('twitch')" class="px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 rounded-lg text-xs font-semibold border border-rose-800/40">
+                Logout
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Kick Auth Column -->
+        <div class="bg-slate-950/80 border border-kick/30 rounded-xl p-4 space-y-4">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-sm text-kick">🟢 Kick Account</span>
+            <span id="modal-kick-status" class="text-xs text-slate-400">Not connected</span>
+          </div>
+
+          <div class="space-y-2">
+            <p class="text-xs text-slate-400">Option 1 (Recommended for Linux): Smart-TV Link Activation Code</p>
+            <button onclick="startKickTvAuth()" class="w-full py-2 bg-kick hover:bg-kick-hover text-slate-950 rounded-xl text-xs font-bold transition">
+              Generate Kick TV Link Code
+            </button>
+          </div>
+
+          <div class="border-t border-slate-800 pt-3 space-y-2">
+            <p class="text-xs text-slate-400">Option 2: Paste Kick <code class="text-kick">session_token</code> cookie or <code class="text-kick">cookies.json</code></p>
+            <input type="password" id="input-kick-token" placeholder="Paste session_token value..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white" />
+            <textarea id="input-kick-cookies" rows="2" placeholder="Or paste exported cookies.json array here..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white font-mono"></textarea>
+            <div class="flex gap-2">
+              <button onclick="saveKickManualCredentials()" class="flex-1 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold border border-slate-700">
+                Save Kick Credentials
+              </button>
+              <button onclick="logoutPlatform('kick')" class="px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 rounded-lg text-xs font-semibold border border-rose-800/40">
+                Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETTINGS MODAL -->
+  <div id="settings-modal" class="fixed inset-0 z-50 hidden bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 space-y-5">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h2 class="font-bold text-lg text-white">⚙️ Miner Settings</h2>
+        <button onclick="closeModal('settings-modal')" class="text-slate-400 hover:text-white text-lg">✕</button>
+      </div>
+
+      <div class="space-y-4 text-xs">
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-slate-400 mb-1">Inventory Refresh (Minutes)</label>
+            <input type="number" id="set-refresh-mins" min="5" max="240" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white" />
+          </div>
+          <div>
+            <label class="block text-slate-400 mb-1">Channel Switch Check (Seconds)</label>
+            <input type="number" id="set-check-secs" min="15" max="600" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white" />
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-slate-400 mb-1">Discord Webhook URL (Notify on Claim)</label>
+          <input type="text" id="set-webhook" placeholder="https://discord.com/api/webhooks/..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white" />
+        </div>
+
+        <div>
+          <label class="block text-slate-400 mb-1">HTTP/SOCKS Proxy (Optional)</label>
+          <input type="text" id="set-proxy" placeholder="http://user:pass@host:port" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white" />
+        </div>
+
+        <label class="flex items-center gap-2 text-slate-300 cursor-pointer pt-1">
+          <input type="checkbox" id="set-badges-emotes" class="w-4 h-4 accent-indigo-500 rounded" />
+          Include Twitch Badge & Emote Drops
+        </label>
+      </div>
+
+      <div class="flex justify-end gap-2 pt-3 border-t border-slate-800">
+        <button onclick="closeModal('settings-modal')" class="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold">Cancel</button>
+        <button onclick="saveFullSettings()" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast-box" class="fixed bottom-5 right-5 z-50 space-y-2 pointer-events-none"></div>
+
+  <script>
+    let appState = {
+      twitch: {},
+      kick: {},
+      config: {
+        twitch_priority_games: [],
+        kick_priority_games: [],
+        excluded_games: [],
+        manual_queue: [],
+      },
+      claims: [],
+      logs: [],
+      available_games: { twitch: [], kick: [] },
+    };
+    let allCampaigns = [];
+    let campaignFilters = { platform: 'all', status: 'active' };
+    let logFilter = 'all';
+
+    function showToast(msg, type = 'info') {
+      const box = document.getElementById('toast-box');
+      const el = document.createElement('div');
+      const colors = type === 'error'
+        ? 'bg-rose-950/95 border-rose-500/50 text-rose-200'
+        : type === 'claim'
+        ? 'bg-emerald-950/95 border-emerald-500/50 text-emerald-200'
+        : 'bg-slate-900/95 border-indigo-500/40 text-slate-100';
+      el.className = `px-4 py-2.5 rounded-xl border text-xs font-semibold shadow-xl transition-all duration-300 ${colors}`;
+      el.innerText = msg;
+      box.appendChild(el);
+      setTimeout(() => el.remove(), 4000);
+    }
+
+    function copyText(text) {
+      navigator.clipboard.writeText(text.trim());
+      showToast(`Copied: ${text.trim()}`);
+    }
+
+    function switchTab(tabName) {
+      ['dashboard', 'campaigns', 'priority', 'claims'].forEach(t => {
+        document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tabName);
+        const btn = document.getElementById(`tab-btn-${t}`);
+        if (t === tabName) {
+          btn.className = 'tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition bg-slate-800 text-white';
+        } else {
+          btn.className = 'tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition text-slate-400 hover:text-white';
+        }
+      });
+      if (tabName === 'campaigns') fetchCampaigns();
+    }
+
+    function openModal(id) {
+      document.getElementById(id).classList.remove('hidden');
+    }
+
+    function closeModal(id) {
+      document.getElementById(id).classList.add('hidden');
+    }
+
+    function statusColor(status) {
+      const s = (status || '').toLowerCase();
+      if (s === 'watching') return 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+      if (s === 'fetching' || s === 'switching') return 'bg-blue-500/20 text-blue-300 border border-blue-500/30';
+      if (s === 'auth_required') return 'bg-amber-500/20 text-amber-300 border border-amber-500/30';
+      if (s === 'paused') return 'bg-slate-800 text-slate-400';
+      return 'bg-slate-800 text-slate-300';
+    }
+
+    function renderPlatformCard(prefix, state) {
+      if (!state) return;
+      const badge = document.getElementById(`${prefix}-status-badge`);
+      badge.innerText = (state.status || 'idle').toUpperCase().replace('_', ' ');
+      badge.className = `text-[11px] font-semibold px-2 py-0.5 rounded-md ${statusColor(state.status)}`;
+
+      document.getElementById(`${prefix}-status-msg`).innerText = state.status_message || 'Idle';
+      document.getElementById(`toggle-${prefix}-enabled`).checked = Boolean(state.enabled);
+
+      const authPill = document.getElementById(`${prefix}-auth-pill`);
+      const modalStatus = document.getElementById(`modal-${prefix}-status`);
+      if (state.authenticated) {
+        authPill.innerText = `✓ ${state.username || 'Connected'}`;
+        authPill.className = 'text-xs px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-semibold';
+        if (modalStatus) modalStatus.innerText = `Connected as ${state.username}`;
+      } else {
+        authPill.innerText = 'Sign In Required';
+        authPill.className = 'text-xs px-2.5 py-1 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 cursor-pointer';
+        authPill.onclick = () => openModal('auth-modal');
+        if (modalStatus) modalStatus.innerText = 'Not connected';
+      }
+
+      // Auth Flow Box
+      const flowBox = document.getElementById(`${prefix}-auth-flow-box`);
+      if (state.auth_flow && state.auth_flow.user_code) {
+        flowBox.classList.remove('hidden');
+        document.getElementById(`${prefix}-user-code`).innerText = state.auth_flow.user_code;
+        document.getElementById(`${prefix}-verify-link`).href = state.auth_flow.verification_uri;
+      } else {
+        flowBox.classList.add('hidden');
+      }
+
+      // Watching Channel Box
+      const chBox = document.getElementById(`${prefix}-channel-box`);
+      const ch = state.watching_channel;
+      if (ch) {
+        const accent = prefix === 'twitch' ? 'text-twitch' : 'text-kick';
+        chBox.innerHTML = `
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></div>
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <a href="${ch.url}" target="_blank" class="font-bold text-sm text-white hover:underline truncate">${ch.display_name}</a>
+                <span class="text-[11px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">👁️ ${(ch.viewers || 0).toLocaleString()}</span>
+                ${ch.acl_based ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300">ACL</span>' : ''}
+              </div>
+              <div class="text-xs ${accent} font-medium truncate">${ch.game_name || 'Live Stream'}</div>
+            </div>
+          </div>
+          <a href="${ch.url}" target="_blank" class="text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 shrink-0">Open ↗</a>
+        `;
+      } else {
+        chBox.innerHTML = `<div class="text-xs text-slate-500 py-1.5">No stream currently active</div>`;
+      }
+
+      // Active Drop Box
+      const dropBox = document.getElementById(`${prefix}-drop-box`);
+      const etaEl = document.getElementById(`${prefix}-drop-eta`);
+      const drop = state.active_drop;
+      const camp = state.active_campaign;
+      if (drop) {
+        const barColor = prefix === 'twitch' ? 'bg-twitch' : 'bg-kick';
+        etaEl.innerText = `${drop.remaining_minutes}m remaining`;
+        dropBox.innerHTML = `
+          <div class="flex items-center gap-3">
+            ${drop.image_url ? `<img src="${drop.image_url}" class="w-11 h-11 rounded-lg object-cover bg-slate-900 border border-slate-700 shrink-0" />` : ''}
+            <div class="flex-1 min-w-0 space-y-1.5">
+              <div class="flex items-center justify-between text-xs">
+                <span class="font-bold text-white truncate">${drop.name}</span>
+                <span class="font-mono text-slate-300 shrink-0">${drop.current_minutes}/${drop.required_minutes}m (${drop.progress_percent}%)</span>
+              </div>
+              <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                <div class="${barColor} h-full transition-all duration-500" style="width: ${drop.progress_percent}%"></div>
+              </div>
+              <div class="text-[11px] text-slate-400 truncate">Campaign: ${camp ? camp.name : ''}</div>
+            </div>
+          </div>
+        `;
+      } else if (camp) {
+        etaEl.innerText = `${camp.overall_progress}% overall`;
+        dropBox.innerHTML = `
+          <div class="text-xs text-slate-300 font-medium">${camp.name} (${camp.game_name})</div>
+          <div class="text-[11px] text-slate-500 mt-1">All timed drops in this campaign are either claimed or awaiting progress sync.</div>
+        `;
+      } else {
+        etaEl.innerText = '';
+        dropBox.innerHTML = `<div class="text-xs text-slate-500 py-1.5">No active drop session</div>`;
+      }
+    }
+
+    function renderDashboard() {
+      renderPlatformCard('twitch', appState.twitch);
+      renderPlatformCard('kick', appState.kick);
+
+      const cfg = appState.config || {};
+      document.getElementById('toggle-auto-claim').checked = Boolean(cfg.auto_claim);
+      document.getElementById('stat-autoclaim').innerText = cfg.auto_claim ? 'Enabled' : 'Disabled';
+      document.getElementById('toggle-auto-switch').checked = Boolean(cfg.auto_switch);
+      document.getElementById('stat-autoswitch').innerText = cfg.auto_switch ? 'Enabled' : 'Disabled';
+      document.getElementById('toggle-auto-points').checked = Boolean(cfg.auto_claim_points);
+      document.getElementById('stat-points').innerText = `${appState.twitch?.points_claimed_session || 0} claimed`;
+      document.getElementById('stat-total-claims').innerText = `${(appState.claims || []).length} rewards`;
+
+      // Settings modal fields
+      document.getElementById('set-refresh-mins').value = cfg.inventory_refresh_minutes || 30;
+      document.getElementById('set-check-secs').value = cfg.channel_check_seconds || 60;
+      document.getElementById('set-webhook').value = cfg.discord_webhook_url || '';
+      document.getElementById('set-proxy').value = cfg.proxy || '';
+      document.getElementById('set-badges-emotes').checked = Boolean(cfg.enable_badges_emotes);
+      document.getElementById('select-priority-mode').value = cfg.priority_mode || 'priority_first';
+      document.getElementById('toggle-prefer-manual-queue').checked = Boolean(cfg.prefer_manual_queue);
+
+      renderLogs();
+      renderClaims();
+      renderPriorityLists();
+      renderManualQueue();
+    }
+
+    function renderLogs() {
+      const logs = (appState.logs || []).filter(l => logFilter === 'all' || l.platform === logFilter);
+      const html = logs.slice(-80).reverse().map(l => {
+        const time = new Date(l.timestamp).toLocaleTimeString();
+        const badgeColor = l.platform === 'twitch'
+          ? 'text-twitch'
+          : l.platform === 'kick'
+          ? 'text-kick'
+          : 'text-indigo-400';
+        const msgColor = l.level === 'error'
+          ? 'text-rose-400'
+          : l.level === 'warn'
+          ? 'text-amber-300'
+          : l.category === 'claim'
+          ? 'text-emerald-300 font-bold'
+          : 'text-slate-300';
+        return `<div class="flex gap-2 leading-relaxed"><span class="text-slate-600 shrink-0">${time}</span><span class="${badgeColor} font-bold shrink-0">[${(l.platform || 'sys').toUpperCase()}]</span><span class="${msgColor} break-all">${l.message}</span></div>`;
+      }).join('');
+
+      document.getElementById('dashboard-log-box').innerHTML = html || '<div class="text-slate-600">No logs yet...</div>';
+      document.getElementById('full-logs-list').innerHTML = html || '<div class="text-slate-600">No logs yet...</div>';
+    }
+
+    function renderClaims() {
+      const claims = appState.claims || [];
+      const renderItem = (c) => {
+        const isTwitch = c.platform === 'twitch';
+        const pill = isTwitch
+          ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-twitch/20 text-twitch font-bold">TWITCH</span>'
+          : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-kick/20 text-kick font-bold">KICK</span>';
+        const time = new Date(c.claimed_at).toLocaleString();
+        return `
+          <div class="flex items-center gap-3 bg-slate-950/80 border border-slate-800/90 p-2.5 rounded-xl">
+            ${c.image_url ? `<img src="${c.image_url}" class="w-10 h-10 rounded-lg object-cover bg-slate-900 shrink-0" />` : '<div class="w-10 h-10 rounded-lg bg-slate-800 flex items-center justify-center">🎁</div>'}
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-1.5">
+                ${pill}
+                <span class="font-bold text-xs text-white truncate">${c.reward_name}</span>
+              </div>
+              <div class="text-[11px] text-slate-400 truncate">${c.game_name} • ${c.campaign_name}</div>
+              <div class="text-[10px] text-slate-500">${time}</div>
+            </div>
+          </div>
+        `;
+      };
+
+      const empty = '<div class="text-xs text-slate-500 text-center py-8">No drops claimed yet</div>';
+      document.getElementById('dashboard-claims-box').innerHTML = claims.slice(0, 12).map(renderItem).join('') || empty;
+      document.getElementById('full-claims-list').innerHTML = claims.map(renderItem).join('') || empty;
+    }
+
+    function renderPriorityLists() {
+      const cfg = appState.config || {};
+      const renderPrio = (platform, list) => {
+        if (!list || list.length === 0) {
+          return `<div class="text-xs text-slate-500 py-6 text-center">No priority games added yet.</div>`;
+        }
+        return list.map((g, idx) => `
+          <div class="flex items-center justify-between bg-slate-950/80 border border-slate-800 px-3 py-2 rounded-xl text-xs">
+            <div class="flex items-center gap-2 truncate">
+              <span class="font-mono text-slate-500 font-bold">#${idx + 1}</span>
+              <span class="font-semibold text-white truncate">${g}</span>
+            </div>
+            <div class="flex items-center gap-1 shrink-0">
+              ${platform !== 'exclude' ? `
+                <button onclick="modifyPriorityGame('${platform}', '${g.replace(/'/g, "\\'")}', 'top')" class="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded text-slate-300" title="Move to #1">⏫</button>
+                <button onclick="modifyPriorityGame('${platform}', '${g.replace(/'/g, "\\'")}', 'up')" class="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded text-slate-300" title="Move Up">▲</button>
+                <button onclick="modifyPriorityGame('${platform}', '${g.replace(/'/g, "\\'")}', 'down')" class="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded text-slate-300" title="Move Down">▼</button>
+              ` : ''}
+              <button onclick="modifyPriorityGame('${platform}', '${g.replace(/'/g, "\\'")}', 'remove')" class="px-1.5 py-0.5 bg-rose-950/60 hover:bg-rose-900 text-rose-300 rounded" title="Remove">✕</button>
+            </div>
+          </div>
+        `).join('');
+      };
+
+      document.getElementById('list-twitch-prio').innerHTML = renderPrio('twitch', cfg.twitch_priority_games || []);
+      document.getElementById('list-kick-prio').innerHTML = renderPrio('kick', cfg.kick_priority_games || []);
+      document.getElementById('list-exclude-games').innerHTML = renderPrio('exclude', cfg.excluded_games || []);
+
+      // Populate autocomplete datalists
+      const tGames = (appState.available_games?.twitch || []).map(g => `<option value="${g}">`).join('');
+      const kGames = (appState.available_games?.kick || []).map(g => `<option value="${g}">`).join('');
+      document.getElementById('datalist-twitch-games').innerHTML = tGames;
+      document.getElementById('datalist-kick-games').innerHTML = kGames;
+    }
+
+    function renderManualQueue() {
+      const queue = appState.config?.manual_queue || [];
+      const container = document.getElementById('manual-queue-list');
+      if (queue.length === 0) {
+        container.innerHTML = `<div class="text-xs text-slate-500 text-center py-6 bg-slate-950/50 rounded-xl border border-slate-800/60">Manual queue is empty. Add a stream URL above or click "Mine / Queue" on any campaign card.</div>`;
+        return;
+      }
+      container.innerHTML = queue.map((item, idx) => {
+        const elapsedMins = Math.floor((item.elapsed_seconds || 0) / 60);
+        const targetText = item.target_minutes > 0 ? `${elapsedMins}m / ${item.target_minutes}m` : `${elapsedMins}m / ∞`;
+        const platBadge = item.platform === 'twitch'
+          ? '<span class="text-[10px] px-2 py-0.5 rounded bg-twitch/20 text-twitch font-bold">TWITCH</span>'
+          : '<span class="text-[10px] px-2 py-0.5 rounded bg-kick/20 text-kick font-bold">KICK</span>';
+        const statusBadge = item.finished
+          ? '<span class="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold">FINISHED</span>'
+          : item.is_live
+          ? '<span class="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold">LIVE</span>'
+          : '<span class="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400">STANDBY</span>';
+
+        return `
+          <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-950/80 border border-slate-800 px-4 py-2.5 rounded-xl text-xs">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <span class="font-mono text-slate-500 font-bold">#${idx + 1}</span>
+              ${platBadge}
+              <a href="${item.url}" target="_blank" class="font-bold text-white hover:underline truncate">${item.username}</a>
+              ${item.game_name ? `<span class="text-slate-400">(${item.game_name})</span>` : ''}
+              ${statusBadge}
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="font-mono text-slate-300">${targetText}</span>
+              <button onclick="switchChannelTo('${item.platform}', '${item.username}')" class="px-2.5 py-1 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 rounded-lg font-semibold">▶ Watch Now</button>
+              ${item.finished ? `<button onclick="resetQueueItem('${item.id}')" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg">↺ Reset</button>` : ''}
+              <button onclick="deleteQueueItem('${item.id}')" class="px-2 py-1 bg-rose-950/60 hover:bg-rose-900 text-rose-300 rounded-lg">✕</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function fetchCampaigns() {
+      try {
+        const res = await fetch('/api/campaigns');
+        const data = await res.json();
+        allCampaigns = data.campaigns || [];
+        if (data.available_games) appState.available_games = data.available_games;
+        document.getElementById('nav-campaign-count').innerText = allCampaigns.length;
+        renderCampaigns();
+        renderPriorityLists();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function setCampaignFilter(key, val) {
+      campaignFilters[key] = val;
+      if (key === 'platform') {
+        ['all', 'twitch', 'kick'].forEach(p => {
+          const btn = document.getElementById(`camp-plat-${p}`);
+          btn.className = p === val
+            ? 'camp-plat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white'
+            : 'camp-plat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:bg-slate-700';
+        });
+      } else if (key === 'status') {
+        ['active', 'all'].forEach(s => {
+          const btn = document.getElementById(`camp-stat-${s}`);
+          btn.className = s === val
+            ? 'camp-stat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-white'
+            : 'camp-stat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400';
+        });
+      }
+      renderCampaigns();
+    }
+
+    function renderCampaigns() {
+      const grid = document.getElementById('campaigns-grid');
+      const q = (document.getElementById('campaign-search')?.value || '').toLowerCase().trim();
+      const filtered = allCampaigns.filter(c => {
+        if (campaignFilters.platform !== 'all' && c.platform !== campaignFilters.platform) return false;
+        if (campaignFilters.status === 'active' && c.finished) return false;
+        if (q && !c.name.toLowerCase().includes(q) && !c.game_name.toLowerCase().includes(q)) return false;
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        grid.innerHTML = `<div class="col-span-full bg-slate-900/70 border border-slate-800 rounded-2xl p-12 text-center text-sm text-slate-400">No campaigns match the current filter. Click <strong>Refresh</strong> or sign in to load campaigns.</div>`;
+        return;
+      }
+
+      grid.innerHTML = filtered.map(c => {
+        const isTwitch = c.platform === 'twitch';
+        const borderCol = isTwitch ? 'border-purple-500/25' : 'border-kick/25';
+        const badge = isTwitch
+          ? '<span class="text-[10px] px-2 py-0.5 rounded bg-twitch/20 text-twitch font-bold">TWITCH</span>'
+          : '<span class="text-[10px] px-2 py-0.5 rounded bg-kick/20 text-kick font-bold">KICK</span>';
+        const prioList = isTwitch ? (appState.config?.twitch_priority_games || []) : (appState.config?.kick_priority_games || []);
+        const isPrioritized = prioList.includes(c.game_name);
+        const safeGame = (c.game_name || '').replace(/'/g, "\\'");
+
+        const dropsHtml = (c.drops || []).map(d => {
+          const barColor = d.is_claimed ? 'bg-emerald-500' : (isTwitch ? 'bg-twitch' : 'bg-kick');
+          return `
+            <div class="flex items-center gap-3 bg-slate-950/80 border border-slate-800/80 p-2.5 rounded-xl">
+              ${d.image_url ? `<img src="${d.image_url}" class="w-10 h-10 rounded-lg object-cover bg-slate-900 shrink-0" />` : '<div class="w-10 h-10 rounded-lg bg-slate-900 flex items-center justify-center">🎁</div>'}
+              <div class="flex-1 min-w-0 space-y-1">
+                <div class="flex items-center justify-between text-xs">
+                  <span class="font-semibold text-white truncate">${d.name}</span>
+                  <span class="font-mono text-[11px] text-slate-400 shrink-0">${d.current_minutes}/${d.required_minutes}m (${d.progress_percent}%)</span>
+                </div>
+                <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div class="${barColor} h-full" style="width: ${d.progress_percent}%"></div>
+                </div>
+              </div>
+              ${d.is_claimed
+                ? '<span class="text-[10px] px-2 py-1 rounded bg-emerald-500/20 text-emerald-300 font-bold shrink-0">✓ Claimed</span>'
+                : d.can_claim
+                ? `<button onclick="claimSingleDrop('${c.platform}', '${c.id}', '${d.id}')" class="text-xs px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold shrink-0">Claim!</button>`
+                : ''}
+            </div>
+          `;
+        }).join('');
+
+        const channelsHtml = (c.allowed_channels || []).slice(0, 6).map(ch => `
+          <button onclick="switchChannelTo('${c.platform}', '${ch.username}')" class="text-[11px] px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">
+            📺 ${ch.display_name}
+          </button>
+        `).join('');
+
+        return `
+          <div class="bg-slate-900/95 border ${borderCol} rounded-2xl p-4 flex flex-col justify-between space-y-4">
+            <div class="space-y-3">
+              <div class="flex items-start justify-between gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  ${c.image_url ? `<img src="${c.image_url}" class="w-12 h-14 rounded-lg object-cover bg-slate-950 border border-slate-800 shrink-0" />` : ''}
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      ${badge}
+                      <span class="font-bold text-sm text-white truncate">${c.game_name}</span>
+                      ${isPrioritized ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">★ Priority</span>' : ''}
+                    </div>
+                    <div class="text-xs text-slate-300 truncate mt-0.5">${c.name}</div>
+                    <div class="text-[11px] text-slate-500 mt-0.5">
+                      ${c.ends_at ? `Ends: ${new Date(c.ends_at).toLocaleDateString()} ${new Date(c.ends_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 'Active Campaign'}
+                    </div>
+                  </div>
+                </div>
+                <div class="flex flex-col items-end gap-1.5 shrink-0">
+                  <button onclick="queueCampaign('${c.platform}', '${c.id}')" class="px-3 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition">
+                    ⚡ Mine / Queue
+                  </button>
+                  <div class="flex gap-1">
+                    <button onclick="modifyPriorityGame('${c.platform}', '${safeGame}', 'top')" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300" title="Prioritize Game">★ Prio</button>
+                    <button onclick="modifyPriorityGame('exclude', '${safeGame}', 'add')" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-300" title="Exclude Game">🚫</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Rewards -->
+              <div class="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                ${dropsHtml}
+              </div>
+
+              <!-- Participating Channels -->
+              ${channelsHtml ? `
+                <div class="pt-1">
+                  <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">Participating Channels (Click to watch):</div>
+                  <div class="flex flex-wrap gap-1.5">${channelsHtml}</div>
+                </div>
+              ` : `<div class="text-[11px] text-slate-500 italic">🌐 Global Category Drop — Automatically finds live streamers for ${c.game_name}</div>`}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // --- API Actions ---
+    async function toggleQuickSetting(key, val) {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: val }),
+      });
+      showToast(`Updated ${key.replace(/_/g, ' ')}`);
+    }
+
+    async function saveFullSettings() {
+      const payload = {
+        inventory_refresh_minutes: parseInt(document.getElementById('set-refresh-mins').value || '30', 10),
+        channel_check_seconds: parseInt(document.getElementById('set-check-secs').value || '60', 10),
+        discord_webhook_url: document.getElementById('set-webhook').value,
+        proxy: document.getElementById('set-proxy').value,
+        enable_badges_emotes: document.getElementById('set-badges-emotes').checked,
+      };
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.config) appState.config = data.config;
+      closeModal('settings-modal');
+      showToast('Settings saved!');
+    }
+
+    async function updatePriorityMode(mode) {
+      const res = await fetch('/api/priority', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priority_mode: mode }),
+      });
+      const data = await res.json();
+      if (data.config) appState.config = data.config;
+      showToast(`Priority mode set to ${mode}`);
+    }
+
+    async function modifyPriorityGame(platform, gameName, action) {
+      if (!gameName || !gameName.trim()) return;
+      const res = await fetch('/api/priority/game', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform, game_name: gameName.trim(), action }),
+      });
+      const data = await res.json();
+      if (data.config) {
+        appState.config = data.config;
+        renderPriorityLists();
+        renderCampaigns();
+        showToast(`${action.toUpperCase()}: ${gameName}`);
+      }
+    }
+
+    async function queueCampaign(platform, campaignId) {
+      const res = await fetch('/api/campaigns/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform, campaign_id: campaignId }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        showToast(`Prioritized & queued ${data.game_prioritized}!`, 'claim');
+        await fetchStatus();
+      }
+    }
+
+    async function addManualQueueItem() {
+      const url = document.getElementById('queue-url-input').value.trim();
+      const mins = parseInt(document.getElementById('queue-mins-input').value || '120', 10);
+      if (!url) return;
+      const res = await fetch('/api/queue/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, target_minutes: mins }),
+      });
+      const data = await res.json();
+      if (data.queue) {
+        appState.config.manual_queue = data.queue;
+        document.getElementById('queue-url-input').value = '';
+        renderManualQueue();
+        showToast(`Added ${url} to queue`);
+      }
+    }
+
+    async function deleteQueueItem(id) {
+      const res = await fetch(`/api/queue/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.queue) {
+        appState.config.manual_queue = data.queue;
+        renderManualQueue();
+      }
+    }
+
+    async function resetQueueItem(id) {
+      const res = await fetch(`/api/queue/${id}/reset`, { method: 'POST' });
+      const data = await res.json();
+      if (data.queue) {
+        appState.config.manual_queue = data.queue;
+        renderManualQueue();
+      }
+    }
+
+    async function refreshAllCampaigns() {
+      showToast('Refreshing Twitch & Kick campaigns...');
+      await fetch('/api/campaigns/refresh', { method: 'POST' });
+      await fetchCampaigns();
+      showToast('Campaigns refreshed!');
+    }
+
+    async function claimAllReady() {
+      const res = await fetch('/api/campaigns/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform: 'all' }),
+      });
+      const data = await res.json();
+      showToast(`Claimed ${data.claimed || 0} ready drop(s)!`, 'claim');
+      await fetchCampaigns();
+    }
+
+    async function claimSingleDrop(platform, campaignId, dropId) {
+      const res = await fetch('/api/campaigns/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform, campaign_id: campaignId, drop_id: dropId }),
+      });
+      const data = await res.json();
+      if (data.claimed > 0) {
+        showToast('Drop claimed successfully!', 'claim');
+      } else {
+        showToast('Drop could not be claimed yet', 'error');
+      }
+      await fetchCampaigns();
+    }
+
+    async function forceSwitchChannel(platform) {
+      await fetch('/api/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform }),
+      });
+      showToast(`Re-evaluating best ${platform} stream...`);
+    }
+
+    async function switchChannelTo(platform, username) {
+      const res = await fetch('/api/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform, username }),
+      });
+      if (res.ok) {
+        showToast(`Switched ${platform} to ${username}`);
+      } else {
+        const err = await res.json();
+        showToast(err.detail || 'Channel is offline', 'error');
+      }
+    }
+
+    // --- Auth Functions ---
+    async function startTwitchDeviceAuth() {
+      const res = await fetch('/api/auth/twitch/device', { method: 'POST' });
+      const data = await res.json();
+      if (data.flow) {
+        appState.twitch.auth_flow = data.flow;
+        renderDashboard();
+        closeModal('auth-modal');
+        showToast(`Enter Twitch code ${data.flow.user_code} at twitch.tv/activate`);
+      }
+    }
+
+    async function saveTwitchManualToken() {
+      const token = document.getElementById('input-twitch-token').value.trim();
+      if (!token) return;
+      const res = await fetch('/api/auth/twitch/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      });
+      if (res.ok) {
+        showToast('Twitch token verified!', 'claim');
+        document.getElementById('input-twitch-token').value = '';
+        await fetchStatus();
+      } else {
+        showToast('Invalid Twitch token', 'error');
+      }
+    }
+
+    async function startKickTvAuth() {
+      const res = await fetch('/api/auth/kick/tv', { method: 'POST' });
+      const data = await res.json();
+      if (data.flow) {
+        appState.kick.auth_flow = data.flow;
+        renderDashboard();
+        closeModal('auth-modal');
+        showToast(`Confirm Kick TV code ${data.flow.user_code}`);
+      }
+    }
+
+    async function saveKickManualCredentials() {
+      const session_token = document.getElementById('input-kick-token').value.trim();
+      const cookies_json = document.getElementById('input-kick-cookies').value.trim();
+      const res = await fetch('/api/auth/kick/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_token: session_token || null,
+          cookies_json: cookies_json || null,
+        }),
+      });
+      if (res.ok) {
+        showToast('Kick credentials verified!', 'claim');
+        document.getElementById('input-kick-token').value = '';
+        document.getElementById('input-kick-cookies').value = '';
+        await fetchStatus();
+      } else {
+        const err = await res.json();
+        showToast(err.detail || 'Kick credentials rejected', 'error');
+      }
+    }
+
+    async function logoutPlatform(platform) {
+      await fetch(`/api/auth/${platform}/logout`, { method: 'POST' });
+      showToast(`Logged out of ${platform}`);
+      await fetchStatus();
+    }
+
+    function setLogFilter(f) {
+      logFilter = f;
+      ['all', 'twitch', 'kick'].forEach(k => {
+        document.getElementById(`log-filter-${k}`).className = k === f
+          ? 'log-filter-btn text-[11px] px-2 py-0.5 rounded bg-slate-700 text-white'
+          : 'log-filter-btn text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-400';
+      });
+      renderLogs();
+    }
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        appState = { ...appState, ...data };
+        renderDashboard();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function connectWebSocket() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${proto}//${location.host}/ws`);
+      const badge = document.getElementById('ws-badge');
+
+      ws.onopen = () => {
+        badge.innerText = '● Live';
+        badge.className = 'text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+      };
+
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === 'init') {
+            appState = { ...appState, ...msg.data };
+            renderDashboard();
+          } else if (msg.type === 'state_twitch') {
+            appState.twitch = msg.data;
+            renderPlatformCard('twitch', appState.twitch);
+          } else if (msg.type === 'state_kick') {
+            appState.kick = msg.data;
+            renderPlatformCard('kick', appState.kick);
+          } else if (msg.type === 'log') {
+            appState.logs.push(msg.data);
+            if (appState.logs.length > 300) appState.logs.shift();
+            renderLogs();
+          } else if (msg.type === 'claim') {
+            appState.claims.unshift(msg.data);
+            renderClaims();
+            showToast(`🎁 Claimed ${msg.data.reward_name} (${msg.data.game_name})!`, 'claim');
+          } else if (msg.type === 'campaigns_updated') {
+            fetchCampaigns();
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      };
+
+      ws.onclose = () => {
+        badge.innerText = 'Reconnecting...';
+        badge.className = 'text-[11px] font-medium px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30';
+        setTimeout(connectWebSocket, 3000);
+      };
+    }
+
+    // Boot
+    fetchStatus();
+    fetchCampaigns();
+    connectWebSocket();
+  </script>
+</body>
+</html>

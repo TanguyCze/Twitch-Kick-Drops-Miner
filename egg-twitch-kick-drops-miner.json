@@ -1,0 +1,94 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL - PTERODACTYL.IO",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-10-20T10:40:00+02:00",
+    "name": "Twitch & Kick Drops Miner",
+    "author": "TanguyCze",
+    "description": "Unified Headless Twitch & Kick Drops Miner with Auto-Claim, Auto-Switch, Priority Queue, and Web Interface (Port 8920).",
+    "features": null,
+    "docker_images": {
+        "Python 3.11": "ghcr.io/parkervcp/yolks:python_3.11",
+        "Python 3.12": "ghcr.io/parkervcp/yolks:python_3.12",
+        "Python 3.10": "ghcr.io/parkervcp/yolks:python_3.10"
+    },
+    "file_denylist": [],
+    "startup": "if [[ -d .git ]] && [[ \"{{AUTO_UPDATE}}\" == \"1\" ]]; then git pull; fi; if [[ -f /home/container/{{REQUIREMENTS_FILE}} ]]; then pip install -U --prefix .local -r /home/container/{{REQUIREMENTS_FILE}}; fi; /usr/local/bin/python /home/container/{{PY_FILE}} --host 0.0.0.0 --port {{SERVER_PORT}} --data-dir /home/container/data --log-level {{LOG_LEVEL}}",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": \"Application startup complete\"\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Twitch & Kick Drops Miner Installation Script\napt update\napt install -y git curl ca-certificates\n\nmkdir -p /mnt/server\ncd /mnt/server\n\nif [ \"${USER_UPLOAD}\" == \"true\" ] || [ \"${USER_UPLOAD}\" == \"1\" ]; then\n    echo -e \"User upload enabled, skipping git clone.\"\nelse\n    if [ -d .git ]; then\n        echo -e \"Updating existing git repository...\"\n        git pull\n    else\n        if [ \"$(ls -A /mnt/server)\" ]; then\n            echo -e \"/mnt/server directory is not empty, cloning into temporary directory and copying files...\"\n            git clone --branch ${BRANCH:-main} ${GIT_ADDRESS} /tmp/repo\n            cp -r /tmp/repo/. /mnt/server/\n            rm -rf /tmp/repo\n        else\n            echo -e \"Cloning ${GIT_ADDRESS} (branch: ${BRANCH:-main})...\"\n            git clone --branch ${BRANCH:-main} ${GIT_ADDRESS} .\n        fi\n    fi\nfi\n\nmkdir -p /mnt/server/data\n\necho -e \"Installing Python requirements...\"\nif [ -f /mnt/server/${REQUIREMENTS_FILE:-requirements.txt} ]; then\n    HOME=/mnt/server pip install -U --prefix /mnt/server/.local -r /mnt/server/${REQUIREMENTS_FILE:-requirements.txt}\nfi\n\necho -e \"-----------------------------------------\"\necho -e \"Installation completed successfully!\"\necho -e \"Allocate port 8920 in Pterodactyl to access the Web UI.\"\necho -e \"-----------------------------------------\"\nexit 0",
+            "container": "python:3.11-slim-bookworm",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Git Repo Address",
+            "description": "GitHub repository URL to clone during server installation.",
+            "env_variable": "GIT_ADDRESS",
+            "default_value": "https://github.com/TanguyCze/Twitch-Kick-Drops-Miner.git",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Git Branch",
+            "description": "The branch of the repository to pull.",
+            "env_variable": "BRANCH",
+            "default_value": "main",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Auto Update",
+            "description": "Automatically pull latest updates from GitHub on startup (1 = enabled, 0 = disabled).",
+            "env_variable": "AUTO_UPDATE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|boolean",
+            "field_type": "text"
+        },
+        {
+            "name": "App Entrypoint File",
+            "description": "The main Python file that starts the miner and Web UI.",
+            "env_variable": "PY_FILE",
+            "default_value": "main.py",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Requirements File",
+            "description": "Python requirements file to install on startup.",
+            "env_variable": "REQUIREMENTS_FILE",
+            "default_value": "requirements.txt",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Log Level",
+            "description": "Logging verbosity level (debug, info, warning, error).",
+            "env_variable": "LOG_LEVEL",
+            "default_value": "info",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:debug,info,warning,error",
+            "field_type": "text"
+        }
+    ]
+}

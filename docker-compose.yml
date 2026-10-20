@@ -1,0 +1,14 @@
+services:
+  twitch-kick-miner:
+    build: .
+    container_name: twitch-kick-miner
+    restart: unless-stopped
+    ports:
+      - "8920:8920"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - MINER_HOST=0.0.0.0
+      - MINER_PORT=8920
+      - MINER_DATA_DIR=/app/data
+      - TZ=UTC
