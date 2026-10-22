@@ -389,12 +389,19 @@
 
         <!-- Twitch Priority List -->
         <div class="bg-slate-900/90 border border-purple-500/30 rounded-2xl p-5 space-y-4 flex flex-col">
-          <div>
-            <h3 class="font-bold text-sm text-white flex items-center gap-2">
-              <span class="w-2.5 h-2.5 rounded-full bg-twitch"></span> Twitch Game Priority Queue
-            </h3>
-            <p class="text-xs text-slate-400 mt-0.5">Games at the top are mined first on Twitch.</p>
+          <div class="flex items-start justify-between gap-2">
+            <div>
+              <h3 class="font-bold text-sm text-white flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-twitch"></span> Twitch Game Priority Queue
+              </h3>
+              <p class="text-xs text-slate-400 mt-0.5">Games at the top are mined first on Twitch.</p>
+            </div>
           </div>
+
+          <label class="flex items-center justify-between bg-slate-950/80 border border-slate-800 px-3 py-2 rounded-xl cursor-pointer">
+            <span class="text-xs text-slate-300 font-medium">Strictly only mine games in this queue</span>
+            <input type="checkbox" id="toggle-twitch-prio-only" onchange="toggleQuickSetting('twitch_priority_only', this.checked)" class="w-4 h-4 accent-purple-500 rounded cursor-pointer" />
+          </label>
 
           <div class="flex gap-2">
             <input type="text" id="input-twitch-prio" list="datalist-twitch-games" placeholder="Add Twitch game name..." class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white" />
@@ -409,12 +416,19 @@
 
         <!-- Kick Priority List -->
         <div class="bg-slate-900/90 border border-kick/30 rounded-2xl p-5 space-y-4 flex flex-col">
-          <div>
-            <h3 class="font-bold text-sm text-white flex items-center gap-2">
-              <span class="w-2.5 h-2.5 rounded-full bg-kick"></span> Kick Game Priority Queue
-            </h3>
-            <p class="text-xs text-slate-400 mt-0.5">Games at the top are mined first on Kick.</p>
+          <div class="flex items-start justify-between gap-2">
+            <div>
+              <h3 class="font-bold text-sm text-white flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-kick"></span> Kick Game Priority Queue
+              </h3>
+              <p class="text-xs text-slate-400 mt-0.5">Games at the top are mined first on Kick.</p>
+            </div>
           </div>
+
+          <label class="flex items-center justify-between bg-slate-950/80 border border-slate-800 px-3 py-2 rounded-xl cursor-pointer">
+            <span class="text-xs text-slate-300 font-medium">Strictly only mine games in this queue</span>
+            <input type="checkbox" id="toggle-kick-prio-only" onchange="toggleQuickSetting('kick_priority_only', this.checked)" class="w-4 h-4 accent-emerald-400 rounded cursor-pointer" />
+          </label>
 
           <div class="flex gap-2">
             <input type="text" id="input-kick-prio" list="datalist-kick-games" placeholder="Add Kick game name..." class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white" />
@@ -799,6 +813,10 @@
       document.getElementById('set-badges-emotes').checked = Boolean(cfg.enable_badges_emotes);
       document.getElementById('select-priority-mode').value = cfg.priority_mode || 'priority_first';
       document.getElementById('toggle-prefer-manual-queue').checked = Boolean(cfg.prefer_manual_queue);
+      const tPrioOnly = document.getElementById('toggle-twitch-prio-only');
+      if (tPrioOnly) tPrioOnly.checked = Boolean(cfg.twitch_priority_only);
+      const kPrioOnly = document.getElementById('toggle-kick-prio-only');
+      if (kPrioOnly) kPrioOnly.checked = cfg.kick_priority_only !== undefined ? Boolean(cfg.kick_priority_only) : true;
 
       renderLogs();
       renderClaims();
@@ -1068,11 +1086,13 @@
 
     // --- API Actions ---
     async function toggleQuickSetting(key, val) {
-      await fetch('/api/settings', {
+      const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [key]: val }),
       });
+      const data = await res.json();
+      if (data.config) appState.config = data.config;
       showToast(`Updated ${key.replace(/_/g, ' ')}`);
     }
 

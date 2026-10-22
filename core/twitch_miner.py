@@ -1067,25 +1067,43 @@ class TwitchMiner:
         slug_fallback = re.sub(r"[^a-z0-9]+", "-", game_name.lower()).strip("-")
         return slug_fallback
 
+    def _is_game_excluded(self, game_name: str, campaign_name: str = "") -> bool:
+        g_low = (game_name or "").strip().lower()
+        c_low = (campaign_name or "").strip().lower()
+        for ex in self.config.excluded_games:
+            ex_low = ex.strip().lower()
+            if ex_low and (ex_low == g_low or ex_low == c_low):
+                return True
+        return False
+
+    def _priority_index(self, game_name: str, campaign_name: str = "") -> int:
+        g_low = (game_name or "").strip().lower()
+        c_low = (campaign_name or "").strip().lower()
+        for idx, p_game in enumerate(self.config.twitch_priority_games):
+            p_low = p_game.strip().lower()
+            if p_low and (p_low == g_low or p_low == c_low):
+                return idx
+        return 999999
+
     def _can_earn_campaign(self, camp: DropCampaign) -> bool:
         if camp.finished or not camp.is_active_time:
             return False
-        if camp.game_name in self.config.excluded_games:
+        if self._is_game_excluded(camp.game_name, camp.name):
             return False
-        if (
-            self.config.priority_mode == PriorityMode.PRIORITY_ONLY
-            and camp.game_name not in self.config.twitch_priority_games
-        ):
+        strict_twitch = (
+            self.config.twitch_priority_only
+            or self.config.priority_mode == PriorityMode.PRIORITY_ONLY
+        )
+        if strict_twitch and self._priority_index(camp.game_name, camp.name) >= 999999:
             return False
         return any(not d.is_claimed and d.required_minutes > 0 for d in camp.drops)
 
     def get_prioritized_campaigns(self) -> list[DropCampaign]:
         eligible = [c for c in self.campaigns if self._can_earn_campaign(c)]
-        priority_list = self.config.twitch_priority_games
         mode = self.config.priority_mode
 
         def sort_key(c: DropCampaign) -> tuple[Any, ...]:
-            p_idx = priority_list.index(c.game_name) if c.game_name in priority_list else 999999
+            p_idx = self._priority_index(c.game_name, c.name)
             end_ts = c.ends_at.timestamp() if c.ends_at else float("inf")
             rem = c.remaining_minutes or 999999
             now_ts = datetime.now(timezone.utc).timestamp()
@@ -1540,18 +1558,33 @@ class TwitchMiner:
         self._emit_state()
 
     async def select_best_channel(self) -> Optional[ tuple[ChannelInfo, Optional[DropCampaign], Optional[ManualQueueItem]] ]:
+        strict_twitch = (
+            self.config.twitch_priority_only
+            or self.config.priority_mode == PriorityMode.PRIORITY_ONLY
+        )
         # 1. Check Manual Queue for Twitch items if enabled
         if self.config.prefer_manual_queue:
             for q_item in self.config.manual_queue:
                 if q_item.platform == Platform.TWITCH and not q_item.finished:
+                    if q_item.game_name and self._is_game_excluded(q_item.game_name):
+                        continue
+                    matched_camp = (
+                        self._campaigns_by_id.get(q_item.campaign_id)
+                        if q_item.campaign_id
+                        else None
+                    )
+                    if matched_camp and not self._can_earn_campaign(matched_camp):
+                        continue
+                    if (
+                        strict_twitch
+                        and q_item.game_name
+                        and self._priority_index(q_item.game_name) >= 999999
+                    ):
+                        continue
+
                     ch_info = await self.check_channel_live(q_item.username)
                     if ch_info and ch_info.is_live:
                         q_item.is_live = True
-                        matched_camp = (
-                            self._campaigns_by_id.get(q_item.campaign_id)
-                            if q_item.campaign_id
-                            else None
-                        )
                         return ch_info, matched_camp, q_item
                     else:
                         q_item.is_live = False
@@ -1656,6 +1689,7 @@ class TwitchMiner:
                 await asyncio.sleep(10)
 
     def wake(self) -> None:
+        self._last_channel_check = 0.0
         self._wake_event.set()
 
     async def switch_to_channel(self, username: str) -> bool:

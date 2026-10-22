@@ -47,6 +47,8 @@ class KickCredentialsRequest(BaseModel):
 
 class PriorityUpdateRequest(BaseModel):
     priority_mode: Optional[str] = None
+    twitch_priority_only: Optional[bool] = None
+    kick_priority_only: Optional[bool] = None
     twitch_priority_games: Optional[list[str]] = None
     kick_priority_games: Optional[list[str]] = None
     excluded_games: Optional[list[str]] = None
@@ -93,6 +95,8 @@ class SettingsUpdateRequest(BaseModel):
     enable_badges_emotes: Optional[bool] = None
     prefer_manual_queue: Optional[bool] = None
     priority_mode: Optional[str] = None
+    twitch_priority_only: Optional[bool] = None
+    kick_priority_only: Optional[bool] = None
     inventory_refresh_minutes: Optional[int] = None
     channel_check_seconds: Optional[int] = None
     proxy: Optional[str] = None
@@ -179,6 +183,10 @@ async def update_priority(req: PriorityUpdateRequest) -> dict[str, Any]:
             cfg.priority_mode = PriorityMode(req.priority_mode)
         except ValueError:
             pass
+    if req.twitch_priority_only is not None:
+        cfg.twitch_priority_only = req.twitch_priority_only
+    if req.kick_priority_only is not None:
+        cfg.kick_priority_only = req.kick_priority_only
     if req.twitch_priority_games is not None:
         cfg.twitch_priority_games = [g.strip() for g in req.twitch_priority_games if g.strip()]
     if req.kick_priority_games is not None:
@@ -207,22 +215,40 @@ async def modify_priority_game(req: PriorityGameActionRequest) -> dict[str, Any]
     else:
         raise HTTPException(status_code=400, detail="Invalid target list")
 
+    existing_match = next((g for g in target if g.strip().lower() == game.lower()), None)
+
     if req.action == "add":
-        if game not in target:
+        if not existing_match:
             target.append(game)
+        if req.platform == "exclude":
+            cfg.manual_queue = [
+                q
+                for q in cfg.manual_queue
+                if (q.game_name or "").strip().lower() != game.lower()
+            ]
     elif req.action == "remove":
-        if game in target:
-            target.remove(game)
+        if existing_match:
+            target.remove(existing_match)
+        if req.platform in ("twitch", "kick"):
+            cfg.manual_queue = [
+                q
+                for q in cfg.manual_queue
+                if not (
+                    q.platform.value == req.platform
+                    and q.campaign_id
+                    and (q.game_name or "").strip().lower() == game.lower()
+                )
+            ]
     elif req.action == "top":
-        if game in target:
-            target.remove(game)
-        target.insert(0, game)
-    elif req.action == "up" and game in target:
-        idx = target.index(game)
+        if existing_match:
+            target.remove(existing_match)
+        target.insert(0, existing_match or game)
+    elif req.action == "up" and existing_match:
+        idx = target.index(existing_match)
         if idx > 0:
             target[idx - 1], target[idx] = target[idx], target[idx - 1]
-    elif req.action == "down" and game in target:
-        idx = target.index(game)
+    elif req.action == "down" and existing_match:
+        idx = target.index(existing_match)
         if idx < len(target) - 1:
             target[idx + 1], target[idx] = target[idx], target[idx + 1]
 
@@ -322,6 +348,10 @@ async def update_settings(req: SettingsUpdateRequest) -> dict[str, Any]:
             cfg.priority_mode = PriorityMode(req.priority_mode)
         except ValueError:
             pass
+    if req.twitch_priority_only is not None:
+        cfg.twitch_priority_only = req.twitch_priority_only
+    if req.kick_priority_only is not None:
+        cfg.kick_priority_only = req.kick_priority_only
     if req.inventory_refresh_minutes is not None:
         cfg.inventory_refresh_minutes = max(5, req.inventory_refresh_minutes)
     if req.channel_check_seconds is not None:

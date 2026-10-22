@@ -780,25 +780,43 @@ class KickMiner:
             )
             return []
 
+    def _is_game_excluded(self, game_name: str, campaign_name: str = "") -> bool:
+        g_low = (game_name or "").strip().lower()
+        c_low = (campaign_name or "").strip().lower()
+        for ex in self.config.excluded_games:
+            ex_low = ex.strip().lower()
+            if ex_low and (ex_low == g_low or ex_low == c_low):
+                return True
+        return False
+
+    def _priority_index(self, game_name: str, campaign_name: str = "") -> int:
+        g_low = (game_name or "").strip().lower()
+        c_low = (campaign_name or "").strip().lower()
+        for idx, p_game in enumerate(self.config.kick_priority_games):
+            p_low = p_game.strip().lower()
+            if p_low and (p_low == g_low or p_low == c_low):
+                return idx
+        return 999999
+
     def _can_earn_campaign(self, camp: DropCampaign) -> bool:
         if camp.finished or not camp.is_active_time:
             return False
-        if camp.game_name in self.config.excluded_games:
+        if self._is_game_excluded(camp.game_name, camp.name):
             return False
-        if (
-            self.config.priority_mode == PriorityMode.PRIORITY_ONLY
-            and camp.game_name not in self.config.kick_priority_games
-        ):
+        strict_kick = (
+            self.config.kick_priority_only
+            or self.config.priority_mode == PriorityMode.PRIORITY_ONLY
+        )
+        if strict_kick and self._priority_index(camp.game_name, camp.name) >= 999999:
             return False
         return any(not d.is_claimed and d.required_minutes > 0 for d in camp.drops)
 
     def get_prioritized_campaigns(self) -> list[DropCampaign]:
         eligible = [c for c in self.campaigns if self._can_earn_campaign(c)]
-        priority_list = self.config.kick_priority_games
         mode = self.config.priority_mode
 
         def sort_key(c: DropCampaign) -> tuple[Any, ...]:
-            p_idx = priority_list.index(c.game_name) if c.game_name in priority_list else 999999
+            p_idx = self._priority_index(c.game_name, c.name)
             in_prog = 0 if c.progress_units > 0 else 1
             end_ts = c.ends_at.timestamp() if c.ends_at else float("inf")
             rem = c.remaining_minutes or 999999
@@ -851,10 +869,30 @@ class KickMiner:
     async def select_best_channel(
         self,
     ) -> Optional[tuple[ChannelInfo, Optional[DropCampaign], Optional[ManualQueueItem]]]:
+        strict_kick = (
+            self.config.kick_priority_only
+            or self.config.priority_mode == PriorityMode.PRIORITY_ONLY
+        )
         # 1. Manual Queue (KickDropsMiner style queue with alternative channel switching)
         if self.config.prefer_manual_queue:
             for q_item in self.config.manual_queue:
                 if q_item.platform == Platform.KICK and not q_item.finished:
+                    if q_item.game_name and self._is_game_excluded(q_item.game_name):
+                        continue
+                    matched_camp = (
+                        self._campaigns_by_id.get(q_item.campaign_id)
+                        if q_item.campaign_id
+                        else None
+                    )
+                    if matched_camp and not self._can_earn_campaign(matched_camp):
+                        continue
+                    if (
+                        strict_kick
+                        and q_item.game_name
+                        and self._priority_index(q_item.game_name) >= 999999
+                    ):
+                        continue
+
                     info = await self.check_channel_info(q_item.username)
                     if info and info.is_live:
                         if (
@@ -863,11 +901,6 @@ class KickMiner:
                             or info.game_id == q_item.required_category_id
                         ):
                             q_item.is_live = True
-                            matched_camp = (
-                                self._campaigns_by_id.get(q_item.campaign_id)
-                                if q_item.campaign_id
-                                else None
-                            )
                             return info, matched_camp, q_item
 
                     # Try alternative channels in the queue item if main channel is offline/wrong category
@@ -888,11 +921,6 @@ class KickMiner:
                                 self.events.log(
                                     f"Auto-switched Kick queue item to live alternative: {alt_info.display_name}",
                                     platform="kick",
-                                )
-                                matched_camp = (
-                                    self._campaigns_by_id.get(q_item.campaign_id)
-                                    if q_item.campaign_id
-                                    else None
                                 )
                                 return alt_info, matched_camp, q_item
 
@@ -1024,6 +1052,44 @@ class KickMiner:
                 and self.state.watching_channel
                 and self.state.watching_channel.username.lower() == channel.username.lower()
             ):
+                # Immediately stop if campaign is no longer eligible (e.g. removed from Priority Queue or excluded)
+                if camp and not self._can_earn_campaign(camp):
+                    self.events.log(
+                        f"Kick campaign '{camp.name}' ({camp.game_name}) is not in your Kick Priority Queue or no longer eligible; stopping stream.",
+                        platform="kick",
+                    )
+                    self.state.watching_channel = None
+                    self.state.active_campaign = None
+                    self.state.active_drop = None
+                    break
+
+                if manual_item and (
+                    manual_item.finished or manual_item not in self.config.manual_queue
+                ):
+                    self.state.watching_channel = None
+                    break
+
+                # React immediately if Priority Queue or settings changed
+                if self._wake_event.is_set():
+                    self._wake_event.clear()
+                    best_now = await self.select_best_channel()
+                    if best_now is None:
+                        self.events.log(
+                            f"Stopping Kick stream {channel.display_name} (no matching priority campaigns active).",
+                            platform="kick",
+                        )
+                        self.state.watching_channel = None
+                        self.state.active_campaign = None
+                        self.state.active_drop = None
+                        break
+                    best_ch, best_camp, _ = best_now
+                    if (
+                        (best_camp and camp and best_camp.id != camp.id)
+                        or best_ch.username.lower() != channel.username.lower()
+                    ):
+                        self.state.watching_channel = best_ch
+                        break
+
                 now = time.time()
 
                 # 1. Handshake every 15s
@@ -1091,23 +1157,22 @@ class KickMiner:
                     channel.broadcast_id = fresh_info.broadcast_id or channel.broadcast_id
                     channel.vod_id = fresh_info.vod_id or channel.vod_id
 
-                    # Also check if a higher priority campaign is now available
+                    # Also check if a higher priority campaign is now available or current is no longer eligible
                     if self.config.auto_switch and not manual_item:
                         best_now = await self.select_best_channel()
-                        if best_now:
-                            best_ch, best_camp, _ = best_now
-                            if (
-                                best_camp
-                                and camp
-                                and best_camp.id != camp.id
-                                and best_ch.username.lower() != channel.username.lower()
-                            ):
-                                self.events.log(
-                                    f"Higher priority Kick campaign '{best_camp.name}' available on {best_ch.display_name}, switching...",
-                                    platform="kick",
-                                )
-                                self.state.watching_channel = best_ch
-                                break
+                        if best_now is None:
+                            self.state.watching_channel = None
+                            self.state.active_campaign = None
+                            self.state.active_drop = None
+                            break
+                        best_ch, best_camp, _ = best_now
+                        if best_camp and camp and best_camp.id != camp.id:
+                            self.events.log(
+                                f"Higher priority Kick campaign '{best_camp.name}' available on {best_ch.display_name}, switching...",
+                                platform="kick",
+                            )
+                            self.state.watching_channel = best_ch
+                            break
 
                 # 5. Poll Kick drop progress every 60s to update UI and auto-claim
                 if now - last_progress_poll >= 60.0:
@@ -1213,7 +1278,22 @@ class KickMiner:
                     self.state.active_campaign = None
                     self.state.active_drop = None
                     self.state.status = MinerStatus.IDLE
-                    self.state.status_message = "No active Kick drop streams available right now"
+                    strict_kick = (
+                        self.config.kick_priority_only
+                        or self.config.priority_mode == PriorityMode.PRIORITY_ONLY
+                    )
+                    if strict_kick and not self.config.kick_priority_games:
+                        self.state.status_message = (
+                            "Idle — Add games to your Kick Priority Queue to mine"
+                        )
+                    elif strict_kick:
+                        self.state.status_message = (
+                            "Waiting for live streams in your Kick Priority Queue..."
+                        )
+                    else:
+                        self.state.status_message = (
+                            "No active Kick drop streams available right now"
+                        )
                     self._emit_state()
                     await self._wait_or_wake(30.0)
                     continue

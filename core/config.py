@@ -33,6 +33,8 @@ class AppConfig:
 
         # Priority Queue & Rules
         self.priority_mode: PriorityMode = PriorityMode.PRIORITY_FIRST
+        self.twitch_priority_only: bool = False
+        self.kick_priority_only: bool = True
         self.twitch_priority_games: list[str] = []
         self.kick_priority_games: list[str] = []
         self.excluded_games: list[str] = []
@@ -85,6 +87,8 @@ class AppConfig:
                     self.priority_mode = PriorityMode(mode_str)
                 except ValueError:
                     self.priority_mode = PriorityMode.PRIORITY_FIRST
+                self.twitch_priority_only = bool(data.get("twitch_priority_only", False))
+                self.kick_priority_only = bool(data.get("kick_priority_only", True))
                 self.twitch_priority_games = list(data.get("twitch_priority_games", []))
                 self.kick_priority_games = list(data.get("kick_priority_games", []))
                 self.excluded_games = list(data.get("excluded_games", []))
@@ -133,6 +137,8 @@ class AppConfig:
             "enable_badges_emotes": self.enable_badges_emotes,
             "prefer_manual_queue": self.prefer_manual_queue,
             "priority_mode": self.priority_mode.value,
+            "twitch_priority_only": self.twitch_priority_only,
+            "kick_priority_only": self.kick_priority_only,
             "twitch_priority_games": self.twitch_priority_games,
             "kick_priority_games": self.kick_priority_games,
             "excluded_games": self.excluded_games,
@@ -231,6 +237,8 @@ class AppConfig:
             "enable_badges_emotes": self.enable_badges_emotes,
             "prefer_manual_queue": self.prefer_manual_queue,
             "priority_mode": self.priority_mode.value,
+            "twitch_priority_only": self.twitch_priority_only,
+            "kick_priority_only": self.kick_priority_only,
             "twitch_priority_games": self.twitch_priority_games,
             "kick_priority_games": self.kick_priority_games,
             "excluded_games": self.excluded_games,
