@@ -585,6 +585,66 @@ class TwitchMiner:
                 merged[k] = v
         return merged
 
+    async def _fetch_public_drops_catalog(self) -> dict[str, dict[str, Any]]:
+        """
+        Fetches the full active Twitch Drops catalog from twitch-drops-api.sunkwi.com/drops,
+        which indexes all active Twitch Drop campaigns (including ACL channels, timeBasedDrops,
+        and reward benefits) without requiring browser Client-Integrity or getting masked by
+        sitewide subscription drops on channel highlight slots.
+        """
+        discovered: dict[str, dict[str, Any]] = {}
+        session = await self.get_session()
+        try:
+            async with session.get(
+                "https://twitch-drops-api.sunkwi.com/drops",
+                headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+                timeout=aiohttp.ClientTimeout(total=15),
+                proxy=self.config.proxy or None,
+            ) as resp:
+                if resp.status != 200:
+                    return discovered
+                groups = await resp.json()
+                if not isinstance(groups, list):
+                    return discovered
+                for grp in groups:
+                    if not isinstance(grp, dict):
+                        continue
+                    grp_box_art = str(grp.get("gameBoxArtURL") or "")
+                    grp_game_id = str(grp.get("gameId") or "")
+                    grp_game_name = str(grp.get("gameDisplayName") or "")
+                    for c in grp.get("rewards") or []:
+                        if not isinstance(c, dict) or not c.get("id"):
+                            continue
+                        cid = str(c["id"])
+                        tb_drops = c.get("timeBasedDrops") or []
+                        has_watch_drop = any(
+                            isinstance(d, dict)
+                            and int(d.get("requiredMinutesWatched") or 0) > 0
+                            for d in tb_drops
+                        )
+                        if not has_watch_drop:
+                            continue
+                        game_obj = dict(c.get("game") or {})
+                        if not game_obj.get("id") and grp_game_id:
+                            game_obj["id"] = grp_game_id
+                        if not game_obj.get("displayName") and grp_game_name:
+                            game_obj["displayName"] = grp_game_name
+                        if not game_obj.get("boxArtURL") and grp_box_art:
+                            game_obj["boxArtURL"] = grp_box_art
+                        c["game"] = game_obj
+                        g_name = str(game_obj.get("displayName") or game_obj.get("name") or "")
+                        g_slug = str(game_obj.get("slug") or "")
+                        if g_name and g_slug:
+                            self._game_slug_cache[g_name] = g_slug
+                        discovered[cid] = c
+        except Exception as e:
+            self.events.log(
+                f"Public Twitch drops catalog lookup warning: {e}",
+                platform="twitch",
+                level="warn",
+            )
+        return discovered
+
     async def _discover_top_games_campaigns(self) -> dict[str, dict[str, Any]]:
         """
         Scans the top 200 live Twitch categories with DROPS_ENABLED streams
@@ -687,13 +747,24 @@ class TwitchMiner:
             except Exception:
                 pass
 
-            # 2. Discover active campaigns across top live games (works without Web Client-Integrity)
-            top_discovered = await self._discover_top_games_campaigns()
-            for cid, c_data in top_discovered.items():
-                if cid in available_map:
-                    available_map[cid] = self._merge_dict(available_map[cid], c_data)
-                else:
-                    available_map[cid] = c_data
+            # 2. Discover active campaigns from full public catalog + live top games GQL
+            catalog_task = asyncio.create_task(self._fetch_public_drops_catalog())
+            top_task = asyncio.create_task(self._discover_top_games_campaigns())
+            catalog_discovered, top_discovered = await asyncio.gather(
+                catalog_task, top_task, return_exceptions=True
+            )
+            if isinstance(catalog_discovered, dict):
+                for cid, c_data in catalog_discovered.items():
+                    if cid in available_map:
+                        available_map[cid] = self._merge_dict(available_map[cid], c_data)
+                    else:
+                        available_map[cid] = c_data
+            if isinstance(top_discovered, dict):
+                for cid, c_data in top_discovered.items():
+                    if cid in available_map:
+                        available_map[cid] = self._merge_dict(available_map[cid], c_data)
+                    else:
+                        available_map[cid] = c_data
 
             # Merge discovered campaigns into inventory_map (preserving ongoing_raw as primary)
             for cid, c_data in available_map.items():
@@ -702,8 +773,12 @@ class TwitchMiner:
                 else:
                     inventory_map[cid] = c_data
 
-            # 3. Try fetching extended DropCampaignDetails in chunks of 20
-            all_ids = list(inventory_map.keys())
+            # 3. Try fetching extended DropCampaignDetails only for campaigns missing timeBasedDrops
+            all_ids = [
+                cid
+                for cid, cdata in inventory_map.items()
+                if not cdata.get("timeBasedDrops")
+            ]
             user_id = self.state.user_id
             if user_id and all_ids:
                 for i in range(0, len(all_ids), 20):
