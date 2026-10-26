@@ -238,6 +238,61 @@ GQL_QUERIES: dict[str, dict[str, Any]] = {
     },
 }
 
+INLINE_GQL_FALLBACKS: dict[str, str] = {
+    "VideoPlayerStreamInfoOverlayChannel": """query VideoPlayerStreamInfoOverlayChannel($channel: String!) {
+      user(login: $channel) {
+        id
+        login
+        displayName
+        broadcastSettings {
+          title
+          game { id name displayName }
+        }
+        stream { id viewersCount }
+      }
+    }""",
+    "DropCurrentSessionContext": """query DropCurrentSessionContext($channelID: ID!, $channelLogin: String!) {
+      currentUser {
+        dropCurrentSession(channelID: $channelID, channelLogin: $channelLogin) {
+          dropID
+          currentMinutesWatched
+        }
+      }
+    }""",
+    "ChannelPointsContext": """query ChannelPointsContext($channelLogin: String!) {
+      community {
+        channel(login: $channelLogin) {
+          id
+          self { communityPoints { availableClaim { id } } }
+        }
+      }
+    }""",
+    "ClaimCommunityPoints": """mutation ClaimCommunityPoints($input: ClaimCommunityPointsInput!) {
+      claimCommunityPoints(input: $input) {
+        claim { id }
+      }
+    }""",
+    "DirectoryPage_Game": """query DirectoryPage_Game($slug: String!, $options: StreamSearchOptions, $sortTypeIsRecency: Boolean, $limit: Int) {
+      game(slug: $slug) {
+        streams(options: $options, first: $limit, sortTypeIsRecency: $sortTypeIsRecency) {
+          edges {
+            node {
+              id
+              title
+              viewersCount
+              broadcaster { id login displayName }
+            }
+          }
+        }
+      }
+    }""",
+    "DirectoryGameRedirect": """query DirectoryGameRedirect($name: String!) {
+      game(name: $name) {
+        slug
+      }
+    }""",
+}
+
 
 def make_gql(name: str, variables: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     op = copy.deepcopy(GQL_QUERIES[name])
@@ -531,14 +586,50 @@ class TwitchMiner:
         self._emit_state()
         self.events.log("Logged out of Twitch.", platform="twitch")
 
+    def _has_persisted_query_not_found(self, data: Any) -> bool:
+        items = data if isinstance(data, list) else [data]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for err in item.get("errors") or []:
+                if isinstance(err, dict) and "PersistedQueryNotFound" in str(err.get("message") or ""):
+                    return True
+        return False
+
+    def _convert_to_inline_gql(self, ops: dict[str, Any] | list[dict[str, Any]]) -> Optional[dict[str, Any] | list[dict[str, Any]]]:
+        converted = False
+        if isinstance(ops, dict):
+            op_name = str(ops.get("operationName") or "")
+            if op_name in INLINE_GQL_FALLBACKS and "query" not in ops:
+                new_op = copy.deepcopy(ops)
+                new_op.pop("extensions", None)
+                new_op["query"] = INLINE_GQL_FALLBACKS[op_name]
+                return new_op
+            return None
+        elif isinstance(ops, list):
+            new_list: list[dict[str, Any]] = []
+            for op in ops:
+                op_name = str(op.get("operationName") or "")
+                if op_name in INLINE_GQL_FALLBACKS and "query" not in op:
+                    new_op = copy.deepcopy(op)
+                    new_op.pop("extensions", None)
+                    new_op["query"] = INLINE_GQL_FALLBACKS[op_name]
+                    new_list.append(new_op)
+                    converted = True
+                else:
+                    new_list.append(op)
+            return new_list if converted else None
+        return None
+
     async def gql_request(self, ops: dict[str, Any] | list[dict[str, Any]]) -> Any:
         session = await self.get_session()
         async with self._gql_semaphore:
+            current_ops = ops
             for attempt in range(3):
                 try:
                     async with session.post(
                         "https://gql.twitch.tv/gql",
-                        json=ops,
+                        json=current_ops,
                         headers=self._gql_headers(),
                         proxy=self.config.proxy or None,
                     ) as resp:
@@ -546,6 +637,11 @@ class TwitchMiner:
                             await asyncio.sleep(2 * (attempt + 1))
                             continue
                         data = await resp.json()
+                        if self._has_persisted_query_not_found(data):
+                            inline_ops = self._convert_to_inline_gql(current_ops)
+                            if inline_ops is not None:
+                                current_ops = inline_ops
+                                continue
                         return data
                 except Exception as e:
                     if attempt == 2:

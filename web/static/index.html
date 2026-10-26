@@ -347,6 +347,7 @@
           <div class="h-5 w-[1px] bg-slate-700 mx-1"></div>
 
           <button onclick="setCampaignFilter('status', 'active')" id="camp-stat-active" class="camp-stat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-white">Active & In-Progress</button>
+          <button onclick="setCampaignFilter('status', 'priority')" id="camp-stat-priority" class="camp-stat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400">★ Priority Only</button>
           <button onclick="setCampaignFilter('status', 'all')" id="camp-stat-all" class="camp-stat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400">All (Incl. Completed)</button>
         </div>
 
@@ -599,7 +600,12 @@
 
         <div>
           <label class="block text-slate-400 mb-1">Discord Webhook URL (Notify on Claim)</label>
-          <input type="text" id="set-webhook" placeholder="https://discord.com/api/webhooks/..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white" />
+          <div class="flex gap-2">
+            <input type="text" id="set-webhook" placeholder="https://discord.com/api/webhooks/..." class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white" />
+            <button onclick="testDiscordWebhook()" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-slate-700 font-semibold shrink-0 transition">
+              🔔 Test
+            </button>
+          </div>
         </div>
 
         <div>
@@ -973,8 +979,9 @@
             : 'camp-plat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:bg-slate-700';
         });
       } else if (key === 'status') {
-        ['active', 'all'].forEach(s => {
+        ['active', 'priority', 'all'].forEach(s => {
           const btn = document.getElementById(`camp-stat-${s}`);
+          if (!btn) return;
           btn.className = s === val
             ? 'camp-stat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-white'
             : 'camp-stat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400';
@@ -986,15 +993,25 @@
     function renderCampaigns() {
       const grid = document.getElementById('campaigns-grid');
       const q = (document.getElementById('campaign-search')?.value || '').toLowerCase().trim();
+      const tPrio = (appState.config?.twitch_priority_games || []).map(g => g.toLowerCase());
+      const kPrio = (appState.config?.kick_priority_games || []).map(g => g.toLowerCase());
+      const exList = (appState.config?.excluded_games || []).map(g => g.toLowerCase());
+
       const filtered = allCampaigns.filter(c => {
         if (campaignFilters.platform !== 'all' && c.platform !== campaignFilters.platform) return false;
+        const gLow = (c.game_name || '').toLowerCase();
+        const cLow = (c.name || '').toLowerCase();
+        const inPrio = c.platform === 'twitch'
+          ? (tPrio.includes(gLow) || tPrio.includes(cLow))
+          : (kPrio.includes(gLow) || kPrio.includes(cLow));
         if (campaignFilters.status === 'active' && c.finished) return false;
-        if (q && !c.name.toLowerCase().includes(q) && !c.game_name.toLowerCase().includes(q)) return false;
+        if (campaignFilters.status === 'priority' && !inPrio) return false;
+        if (q && !cLow.includes(q) && !gLow.includes(q)) return false;
         return true;
       });
 
       if (filtered.length === 0) {
-        grid.innerHTML = `<div class="col-span-full bg-slate-900/70 border border-slate-800 rounded-2xl p-12 text-center text-sm text-slate-400">No campaigns match the current filter. Click <strong>Refresh</strong> or sign in to load campaigns.</div>`;
+        grid.innerHTML = `<div class="col-span-full bg-slate-900/70 border border-slate-800 rounded-2xl p-12 text-center text-sm text-slate-400">No campaigns match the current filter. Click <strong>Refresh</strong> or adjust your filter above.</div>`;
         return;
       }
 
@@ -1004,9 +1021,22 @@
         const badge = isTwitch
           ? '<span class="text-[10px] px-2 py-0.5 rounded bg-twitch/20 text-twitch font-bold">TWITCH</span>'
           : '<span class="text-[10px] px-2 py-0.5 rounded bg-kick/20 text-kick font-bold">KICK</span>';
-        const prioList = isTwitch ? (appState.config?.twitch_priority_games || []) : (appState.config?.kick_priority_games || []);
-        const isPrioritized = prioList.includes(c.game_name);
+        const gLow = (c.game_name || '').toLowerCase();
+        const cLow = (c.name || '').toLowerCase();
+        const isPrioritized = isTwitch
+          ? (tPrio.includes(gLow) || tPrio.includes(cLow))
+          : (kPrio.includes(gLow) || kPrio.includes(cLow));
+        const isExcluded = exList.includes(gLow) || exList.includes(cLow);
         const safeGame = (c.game_name || '').replace(/'/g, "\\'");
+        const prioAction = isPrioritized ? 'remove' : 'top';
+        const prioBtnClass = isPrioritized
+          ? 'bg-amber-500/25 hover:bg-amber-500/40 text-amber-300 border border-amber-500/40 font-semibold'
+          : 'bg-slate-800 hover:bg-slate-700 text-slate-300';
+        const prioBtnLabel = isPrioritized ? '★ In Prio ✕' : '★ Prio';
+        const exAction = isExcluded ? 'remove' : 'add';
+        const exBtnClass = isExcluded
+          ? 'bg-rose-500/25 hover:bg-rose-500/40 text-rose-300 border border-rose-500/40 font-semibold'
+          : 'bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-300';
 
         const dropsHtml = (c.drops || []).map(d => {
           const barColor = d.is_claimed ? 'bg-emerald-500' : (isTwitch ? 'bg-twitch' : 'bg-kick');
@@ -1048,10 +1078,12 @@
                       ${badge}
                       <span class="font-bold text-sm text-white truncate">${c.game_name}</span>
                       ${isPrioritized ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">★ Priority</span>' : ''}
+                      ${isExcluded ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold">🚫 Excluded</span>' : ''}
                     </div>
                     <div class="text-xs text-slate-300 truncate mt-0.5">${c.name}</div>
-                    <div class="text-[11px] text-slate-500 mt-0.5">
-                      ${c.ends_at ? `Ends: ${new Date(c.ends_at).toLocaleDateString()} ${new Date(c.ends_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 'Active Campaign'}
+                    <div class="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5 flex-wrap">
+                      <span>${c.ends_at ? `Ends: ${new Date(c.ends_at).toLocaleDateString()} ${new Date(c.ends_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 'Active Campaign'}</span>
+                      ${c.account_link_url ? `<a href="${c.account_link_url}" target="_blank" class="text-indigo-400 hover:underline font-medium">🔗 Link Account ↗</a>` : ''}
                     </div>
                   </div>
                 </div>
@@ -1060,8 +1092,8 @@
                     ⚡ Mine / Queue
                   </button>
                   <div class="flex gap-1">
-                    <button onclick="modifyPriorityGame('${c.platform}', '${safeGame}', 'top')" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300" title="Prioritize Game">★ Prio</button>
-                    <button onclick="modifyPriorityGame('exclude', '${safeGame}', 'add')" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-300" title="Exclude Game">🚫</button>
+                    <button onclick="modifyPriorityGame('${c.platform}', '${safeGame}', '${prioAction}')" class="text-[11px] px-2 py-0.5 rounded ${prioBtnClass} transition" title="${isPrioritized ? 'Remove from Priority Queue' : 'Add to Priority Queue'}">${prioBtnLabel}</button>
+                    <button onclick="modifyPriorityGame('exclude', '${safeGame}', '${exAction}')" class="text-[11px] px-2 py-0.5 rounded ${exBtnClass} transition" title="${isExcluded ? 'Unblock Game' : 'Exclude Game'}">🚫</button>
                   </div>
                 </div>
               </div>
@@ -1113,6 +1145,25 @@
       if (data.config) appState.config = data.config;
       closeModal('settings-modal');
       showToast('Settings saved!');
+    }
+
+    async function testDiscordWebhook() {
+      const url = document.getElementById('set-webhook').value.trim();
+      if (!url) {
+        showToast('Enter a Discord Webhook URL first', 'error');
+        return;
+      }
+      const res = await fetch('/api/settings/test-webhook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ webhook_url: url }),
+      });
+      if (res.ok) {
+        showToast('Test webhook sent to Discord!', 'claim');
+      } else {
+        const err = await res.json();
+        showToast(err.detail || 'Webhook test failed', 'error');
+      }
     }
 
     async function updatePriorityMode(mode) {

@@ -86,6 +86,10 @@ class SwitchChannelRequest(BaseModel):
     username: Optional[str] = None
 
 
+class WebhookTestRequest(BaseModel):
+    webhook_url: Optional[str] = None
+
+
 class SettingsUpdateRequest(BaseModel):
     twitch_enabled: Optional[bool] = None
     kick_enabled: Optional[bool] = None
@@ -367,6 +371,14 @@ async def update_settings(req: SettingsUpdateRequest) -> dict[str, Any]:
     orchestrator.twitch.wake()
     orchestrator.kick.wake()
     return {"ok": True, "config": cfg.to_dict()}
+
+
+@app.post("/api/settings/test-webhook")
+async def test_webhook(req: WebhookTestRequest) -> dict[str, Any]:
+    ok, msg = await orchestrator.send_test_webhook(req.webhook_url)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
 
 
 @app.post("/api/switch")

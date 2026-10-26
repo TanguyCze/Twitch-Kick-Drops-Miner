@@ -61,6 +61,28 @@ class MinerOrchestrator:
         except Exception as e:
             self.events.log(f"Discord webhook failed: {e}", platform="system", level="warn")
 
+    async def send_test_webhook(self, custom_url: Optional[str] = None) -> tuple[bool, str]:
+        webhook_url = (custom_url if custom_url is not None else self.config.discord_webhook_url).strip()
+        if not webhook_url:
+            return False, "No Discord Webhook URL provided"
+        embed: dict[str, Any] = {
+            "title": "✅ Twitch & Kick Drops Miner Connected!",
+            "description": (
+                "Your Discord webhook is configured properly.\n"
+                "You will receive real-time notifications here whenever a **Twitch** or **Kick** drop is claimed!"
+            ),
+            "color": 0x6366F1,
+        }
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.post(webhook_url, json={"embeds": [embed]}) as resp:
+                    if resp.status < 300:
+                        self.events.log("Sent test notification to Discord webhook.", platform="system")
+                        return True, "Test webhook sent successfully!"
+                    return False, f"Discord returned HTTP {resp.status}"
+        except Exception as e:
+            return False, str(e)
+
     def get_full_status(self) -> dict[str, Any]:
         return {
             "twitch": self.twitch.state.model_dump(mode="json"),
