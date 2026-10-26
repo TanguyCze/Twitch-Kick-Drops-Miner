@@ -134,7 +134,13 @@ class DropCampaign(BaseModel):
         unclaimed = [d for d in self.drops if not d.is_claimed and d.required_minutes > 0]
         if not unclaimed:
             return None
-        unclaimed.sort(key=lambda d: (d.remaining_minutes, d.required_minutes))
+        unclaimed.sort(
+            key=lambda d: (
+                0 if d.current_minutes > 0 else 1,
+                d.remaining_minutes,
+                d.required_minutes,
+            )
+        )
         return unclaimed[0]
 
     @property

@@ -17,7 +17,7 @@ from urllib.parse import urljoin
 import aiohttp
 from yarl import URL
 
-from .config import AppConfig
+from .config import AppConfig, DATA_DIR
 from .events import EventBus
 from .models import (
     ChannelInfo,
@@ -310,6 +310,7 @@ class TwitchMiner:
         self._seen_segments: dict[str, list[str]] = {}
         self._last_telemetry_at: dict[str, float] = {}
         self._last_progress_sync: float = 0.0
+        self._current_campaign_id: Optional[str] = None
 
         self._session: Optional[aiohttp.ClientSession] = None
         self._gql_semaphore = asyncio.Semaphore(5)
@@ -590,9 +591,12 @@ class TwitchMiner:
         Fetches the full active Twitch Drops catalog from twitch-drops-api.sunkwi.com/drops,
         which indexes all active Twitch Drop campaigns (including ACL channels, timeBasedDrops,
         and reward benefits) without requiring browser Client-Integrity or getting masked by
-        sitewide subscription drops on channel highlight slots.
+        sitewide subscription drops on channel highlight slots. Falls back to disk cache if offline.
         """
         discovered: dict[str, dict[str, Any]] = {}
+        cache_file = DATA_DIR / "twitch_catalog_cache.json"
+        groups: Optional[list[Any]] = None
+
         session = await self.get_session()
         try:
             async with session.get(
@@ -601,48 +605,63 @@ class TwitchMiner:
                 timeout=aiohttp.ClientTimeout(total=15),
                 proxy=self.config.proxy or None,
             ) as resp:
-                if resp.status != 200:
-                    return discovered
-                groups = await resp.json()
-                if not isinstance(groups, list):
-                    return discovered
-                for grp in groups:
-                    if not isinstance(grp, dict):
-                        continue
-                    grp_box_art = str(grp.get("gameBoxArtURL") or "")
-                    grp_game_id = str(grp.get("gameId") or "")
-                    grp_game_name = str(grp.get("gameDisplayName") or "")
-                    for c in grp.get("rewards") or []:
-                        if not isinstance(c, dict) or not c.get("id"):
-                            continue
-                        cid = str(c["id"])
-                        tb_drops = c.get("timeBasedDrops") or []
-                        has_watch_drop = any(
-                            isinstance(d, dict)
-                            and int(d.get("requiredMinutesWatched") or 0) > 0
-                            for d in tb_drops
-                        )
-                        if not has_watch_drop:
-                            continue
-                        game_obj = dict(c.get("game") or {})
-                        if not game_obj.get("id") and grp_game_id:
-                            game_obj["id"] = grp_game_id
-                        if not game_obj.get("displayName") and grp_game_name:
-                            game_obj["displayName"] = grp_game_name
-                        if not game_obj.get("boxArtURL") and grp_box_art:
-                            game_obj["boxArtURL"] = grp_box_art
-                        c["game"] = game_obj
-                        g_name = str(game_obj.get("displayName") or game_obj.get("name") or "")
-                        g_slug = str(game_obj.get("slug") or "")
-                        if g_name and g_slug:
-                            self._game_slug_cache[g_name] = g_slug
-                        discovered[cid] = c
+                if resp.status == 200:
+                    data = await resp.json()
+                    if isinstance(data, list) and data:
+                        groups = data
+                        try:
+                            cache_file.write_text(json.dumps(groups), encoding="utf-8")
+                        except Exception:
+                            pass
         except Exception as e:
             self.events.log(
                 f"Public Twitch drops catalog lookup warning: {e}",
                 platform="twitch",
                 level="warn",
             )
+
+        if groups is None and cache_file.exists():
+            try:
+                cached_data = json.loads(cache_file.read_text(encoding="utf-8"))
+                if isinstance(cached_data, list):
+                    groups = cached_data
+            except Exception:
+                pass
+
+        if not isinstance(groups, list):
+            return discovered
+
+        for grp in groups:
+            if not isinstance(grp, dict):
+                continue
+            grp_box_art = str(grp.get("gameBoxArtURL") or "")
+            grp_game_id = str(grp.get("gameId") or "")
+            grp_game_name = str(grp.get("gameDisplayName") or "")
+            for c in grp.get("rewards") or []:
+                if not isinstance(c, dict) or not c.get("id"):
+                    continue
+                cid = str(c["id"])
+                tb_drops = c.get("timeBasedDrops") or []
+                has_watch_drop = any(
+                    isinstance(d, dict)
+                    and int(d.get("requiredMinutesWatched") or 0) > 0
+                    for d in tb_drops
+                )
+                if not has_watch_drop:
+                    continue
+                game_obj = dict(c.get("game") or {})
+                if not game_obj.get("id") and grp_game_id:
+                    game_obj["id"] = grp_game_id
+                if not game_obj.get("displayName") and grp_game_name:
+                    game_obj["displayName"] = grp_game_name
+                if not game_obj.get("boxArtURL") and grp_box_art:
+                    game_obj["boxArtURL"] = grp_box_art
+                c["game"] = game_obj
+                g_name = str(game_obj.get("displayName") or game_obj.get("name") or "")
+                g_slug = str(game_obj.get("slug") or "")
+                if g_name and g_slug:
+                    self._game_slug_cache[g_name] = g_slug
+                discovered[cid] = c
         return discovered
 
     async def _discover_top_games_campaigns(self) -> dict[str, dict[str, Any]]:
@@ -1542,6 +1561,7 @@ class TwitchMiner:
                         cur_mins = int(session_ctx.get("currentMinutesWatched") or 0)
                         drop = self._drops_by_id.get(did)
                         if drop and not drop.is_claimed:
+                            self._current_campaign_id = drop.campaign_id
                             changed = False
                             if cur_mins > drop.current_minutes:
                                 drop.current_minutes = cur_mins
@@ -1606,30 +1626,59 @@ class TwitchMiner:
             self._emit_state()
             return
 
-        for camp in self.get_prioritized_campaigns():
-            if camp.game_name.lower() == ch.game_name.lower() or camp.game_name.lower() == "special events":
-                active_d = camp.active_drop
-                self.state.active_campaign = {
-                    "id": camp.id,
-                    "name": camp.name,
-                    "game_name": camp.game_name,
-                    "image_url": camp.image_url,
-                    "overall_progress": round(camp.overall_progress * 100, 1),
+        prio_camps = self.get_prioritized_campaigns()
+        target_camp: Optional[DropCampaign] = None
+
+        # 1. Prefer explicitly tracked campaign if still eligible and matching
+        if self._current_campaign_id:
+            cand = self._campaigns_by_id.get(self._current_campaign_id)
+            if cand and self._can_earn_campaign(cand):
+                if (
+                    cand.game_name.lower() == ch.game_name.lower()
+                    or any(ac.username.lower() == ch.username.lower() for ac in cand.allowed_channels)
+                ):
+                    target_camp = cand
+
+        # 2. Match campaign whose ACL explicitly includes the watched channel
+        if target_camp is None:
+            for camp in prio_camps:
+                if camp.allowed_channels and any(
+                    ac.username.lower() == ch.username.lower() for ac in camp.allowed_channels
+                ):
+                    target_camp = camp
+                    break
+
+        # 3. Match global campaign for the watched game
+        if target_camp is None:
+            for camp in prio_camps:
+                if (
+                    camp.game_name.lower() == ch.game_name.lower()
+                    or camp.game_name.lower() == "special events"
+                ):
+                    target_camp = camp
+                    break
+
+        if target_camp:
+            active_d = target_camp.active_drop
+            self.state.active_campaign = {
+                "id": target_camp.id,
+                "name": target_camp.name,
+                "game_name": target_camp.game_name,
+                "image_url": target_camp.image_url,
+                "overall_progress": round(target_camp.overall_progress * 100, 1),
+            }
+            if active_d:
+                self.state.active_drop = {
+                    "id": active_d.id,
+                    "name": active_d.name,
+                    "current_minutes": active_d.current_minutes,
+                    "required_minutes": active_d.required_minutes,
+                    "progress_percent": active_d.progress_percent,
+                    "remaining_minutes": active_d.remaining_minutes,
+                    "image_url": active_d.image_url,
                 }
-                if active_d:
-                    self.state.active_drop = {
-                        "id": active_d.id,
-                        "name": active_d.name,
-                        "current_minutes": active_d.current_minutes,
-                        "required_minutes": active_d.required_minutes,
-                        "progress_percent": active_d.progress_percent,
-                        "remaining_minutes": active_d.remaining_minutes,
-                        "image_url": active_d.image_url,
-                    }
-                else:
-                    self.state.active_drop = None
-                self._emit_state()
-                return
+            else:
+                self.state.active_drop = None
         self._emit_state()
 
     async def select_best_channel(self) -> Optional[ tuple[ChannelInfo, Optional[DropCampaign], Optional[ManualQueueItem]] ]:
@@ -1833,33 +1882,58 @@ class TwitchMiner:
                         self.state.watching_channel = None
                         self.state.active_campaign = None
                         self.state.active_drop = None
+                        self._current_campaign_id = None
                         self.state.status = MinerStatus.IDLE
-                        self.state.status_message = "No active Twitch drop streams available right now"
+                        strict_twitch = (
+                            self.config.twitch_priority_only
+                            or self.config.priority_mode == PriorityMode.PRIORITY_ONLY
+                        )
+                        if strict_twitch and not self.config.twitch_priority_games:
+                            self.state.status_message = (
+                                "Idle — Add games to your Twitch Priority Queue to mine"
+                            )
+                        elif strict_twitch:
+                            self.state.status_message = (
+                                "Waiting for live streams in your Twitch Priority Queue..."
+                            )
+                        else:
+                            self.state.status_message = (
+                                "No active Twitch drop streams available right now"
+                            )
                         self._emit_state()
                         await self._wait_or_wake(30.0)
                         continue
 
                     target_ch, target_camp, manual_item = best
+                    self._current_campaign_id = target_camp.id if target_camp else None
                     curr_ch = self.state.watching_channel
                     if curr_ch is None or (
                         self.config.auto_switch and curr_ch.username.lower() != target_ch.username.lower()
                     ):
-                        # If current channel is still live and playing the same highest-priority game, stay on it
+                        # If current channel is still live and valid for target_camp, stay on it
                         should_change = True
                         if (
                             curr_ch is not None
                             and target_camp is not None
                             and curr_ch.game_name.lower() == target_camp.game_name.lower()
                         ):
-                            live_curr = await self.check_channel_live(curr_ch.username)
-                            if (
-                                live_curr
-                                and live_curr.is_live
-                                and live_curr.game_name.lower() == target_camp.game_name.lower()
-                                and (curr_ch.acl_based or not target_ch.acl_based)
-                            ):
-                                self.state.watching_channel = live_curr
-                                should_change = False
+                            acl_ok = (
+                                not target_camp.allowed_channels
+                                or any(
+                                    ac.username.lower() == curr_ch.username.lower()
+                                    for ac in target_camp.allowed_channels
+                                )
+                            )
+                            if acl_ok:
+                                live_curr = await self.check_channel_live(curr_ch.username)
+                                if (
+                                    live_curr
+                                    and live_curr.is_live
+                                    and live_curr.game_name.lower() == target_camp.game_name.lower()
+                                    and (curr_ch.acl_based or not target_ch.acl_based)
+                                ):
+                                    self.state.watching_channel = live_curr
+                                    should_change = False
 
                         if should_change:
                             self.state.watching_channel = target_ch
