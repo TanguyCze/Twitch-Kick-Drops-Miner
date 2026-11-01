@@ -1286,7 +1286,7 @@ class TwitchMiner:
         )
         if strict_twitch and self._priority_index(camp.game_name, camp.name) >= 999999:
             return False
-        return any(not d.is_claimed and d.required_minutes > 0 for d in camp.drops)
+        return camp.has_earnable_drop
 
     def get_prioritized_campaigns(self) -> list[DropCampaign]:
         eligible = [c for c in self.campaigns if self._can_earn_campaign(c)]
@@ -1620,6 +1620,8 @@ class TwitchMiner:
                 self.state.last_watch_ping = datetime.now(timezone.utc).isoformat()
                 last_tel = self._last_telemetry_at.get(login, 0.0)
                 if now - last_tel >= 55.0:
+                    if last_tel > 0.0:
+                        self.state.minutes_watched_session += 1
                     self._last_telemetry_at[login] = now
                     await self.send_spade_event(channel)
             return ok

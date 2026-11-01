@@ -381,6 +381,51 @@ async def test_webhook(req: WebhookTestRequest) -> dict[str, Any]:
     return {"ok": True, "message": msg}
 
 
+@app.get("/api/config/export")
+async def export_config() -> dict[str, Any]:
+    return orchestrator.config.to_dict()
+
+
+@app.post("/api/config/import")
+async def import_config(payload: dict[str, Any]) -> dict[str, Any]:
+    cfg = orchestrator.config
+    if "twitch_enabled" in payload:
+        cfg.twitch_enabled = bool(payload["twitch_enabled"])
+    if "kick_enabled" in payload:
+        cfg.kick_enabled = bool(payload["kick_enabled"])
+    if "auto_claim" in payload:
+        cfg.auto_claim = bool(payload["auto_claim"])
+    if "auto_switch" in payload:
+        cfg.auto_switch = bool(payload["auto_switch"])
+    if "auto_claim_points" in payload:
+        cfg.auto_claim_points = bool(payload["auto_claim_points"])
+    if "enable_badges_emotes" in payload:
+        cfg.enable_badges_emotes = bool(payload["enable_badges_emotes"])
+    if "prefer_manual_queue" in payload:
+        cfg.prefer_manual_queue = bool(payload["prefer_manual_queue"])
+    if "twitch_priority_only" in payload:
+        cfg.twitch_priority_only = bool(payload["twitch_priority_only"])
+    if "kick_priority_only" in payload:
+        cfg.kick_priority_only = bool(payload["kick_priority_only"])
+    if "priority_mode" in payload:
+        try:
+            cfg.priority_mode = PriorityMode(str(payload["priority_mode"]))
+        except ValueError:
+            pass
+    if isinstance(payload.get("twitch_priority_games"), list):
+        cfg.twitch_priority_games = [str(g).strip() for g in payload["twitch_priority_games"] if str(g).strip()]
+    if isinstance(payload.get("kick_priority_games"), list):
+        cfg.kick_priority_games = [str(g).strip() for g in payload["kick_priority_games"] if str(g).strip()]
+    if isinstance(payload.get("excluded_games"), list):
+        cfg.excluded_games = [str(g).strip() for g in payload["excluded_games"] if str(g).strip()]
+    cfg.save()
+    orchestrator.twitch._emit_state()
+    orchestrator.kick._emit_state()
+    orchestrator.twitch.wake()
+    orchestrator.kick.wake()
+    return {"ok": True, "config": cfg.to_dict()}
+
+
 @app.post("/api/switch")
 async def switch_channel(req: SwitchChannelRequest) -> dict[str, Any]:
     if req.platform == "twitch":

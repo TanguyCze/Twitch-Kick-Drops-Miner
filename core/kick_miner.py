@@ -809,7 +809,7 @@ class KickMiner:
         )
         if strict_kick and self._priority_index(camp.game_name, camp.name) >= 999999:
             return False
-        return any(not d.is_claimed and d.required_minutes > 0 for d in camp.drops)
+        return camp.has_earnable_drop
 
     def get_prioritized_campaigns(self) -> list[DropCampaign]:
         eligible = [c for c in self.campaigns if self._can_earn_campaign(c)]
@@ -1111,6 +1111,8 @@ class KickMiner:
 
                 # 3. Watch livestream tracking event every 120s
                 if now - last_watch_event >= self._watch_interval_sec:
+                    if last_watch_event > 0.0:
+                        self.state.minutes_watched_session += 2
                     msg_payload: dict[str, Any] = {
                         "name": "tracking.user.watch.livestream",
                         "channel_id": _numeric_or_str(channel.id),

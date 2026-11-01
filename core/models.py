@@ -129,6 +129,28 @@ class DropCampaign(BaseModel):
             return 0.0
         return sum(d.progress for d in self.drops) / len(self.drops)
 
+    def is_drop_unlocked(self, drop: DropReward) -> bool:
+        if not drop.precondition_drops:
+            return True
+        claimed_ids = {d.id for d in self.drops if d.is_claimed}
+        return all(pid in claimed_ids for pid in drop.precondition_drops)
+
+    @property
+    def has_earnable_drop(self) -> bool:
+        now = datetime.now(timezone.utc)
+        for d in self.drops:
+            if d.is_claimed or d.required_minutes <= 0:
+                continue
+            if not self.is_drop_unlocked(d):
+                continue
+            end_dt = d.ends_at or self.ends_at
+            if end_dt:
+                mins_until_end = (end_dt - now).total_seconds() / 60.0
+                if d.remaining_minutes > mins_until_end + 5:
+                    continue
+            return True
+        return False
+
     @property
     def active_drop(self) -> Optional[DropReward]:
         unclaimed = [d for d in self.drops if not d.is_claimed and d.required_minutes > 0]
@@ -136,6 +158,7 @@ class DropCampaign(BaseModel):
             return None
         unclaimed.sort(
             key=lambda d: (
+                0 if self.is_drop_unlocked(d) else 1,
                 0 if d.current_minutes > 0 else 1,
                 d.remaining_minutes,
                 d.required_minutes,
@@ -145,9 +168,13 @@ class DropCampaign(BaseModel):
 
     @property
     def remaining_minutes(self) -> int:
-        if not self.drops:
+        unclaimed = [d for d in self.drops if not d.is_claimed and d.required_minutes > 0]
+        if not unclaimed:
             return 0
-        return max((d.remaining_minutes for d in self.drops if not d.is_claimed), default=0)
+        has_preconditions = any(bool(d.precondition_drops) for d in unclaimed)
+        if has_preconditions:
+            return sum(d.remaining_minutes for d in unclaimed)
+        return max((d.remaining_minutes for d in unclaimed), default=0)
 
     def to_summary_dict(self) -> dict[str, Any]:
         active = self.active_drop
@@ -168,6 +195,7 @@ class DropCampaign(BaseModel):
             "total_drops": self.total_drops,
             "claimed_drops": self.claimed_drops,
             "finished": self.finished,
+            "has_earnable_drop": self.has_earnable_drop,
             "overall_progress": round(self.overall_progress * 100, 1),
             "remaining_minutes": self.remaining_minutes,
             "active_drop": {
@@ -198,6 +226,7 @@ class DropCampaign(BaseModel):
                     "is_claimed": d.is_claimed,
                     "can_claim": d.can_claim,
                     "claim_id": d.claim_id,
+                    "locked": not d.is_claimed and not self.is_drop_unlocked(d),
                 }
                 for d in self.drops
             ],
@@ -244,4 +273,5 @@ class PlatformMinerState(BaseModel):
     last_watch_ping: Optional[str] = None
     points_claimed_session: int = 0
     drops_claimed_session: int = 0
+    minutes_watched_session: int = 0
     auth_flow: Optional[dict[str, Any]] = None  # Pending device code / TV link info

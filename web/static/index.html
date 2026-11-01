@@ -200,7 +200,7 @@
 
           <!-- Footer Actions -->
           <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
-            <span>Method: <strong class="text-slate-300">Zero-Bandwidth HLS HEAD</strong></span>
+            <span>Method: <strong class="text-slate-300">Zero-Bandwidth HLS HEAD</strong> <span id="twitch-session-stats" class="text-slate-500 ml-1"></span></span>
             <button onclick="openModal('auth-modal')" class="text-purple-400 hover:text-purple-300 font-semibold">Manage Twitch Auth →</button>
           </div>
         </div>
@@ -296,7 +296,7 @@
 
           <!-- Footer Actions -->
           <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
-            <span>Method: <strong class="text-slate-300">Zero-Bandwidth Viewer WS + TLS Impersonation</strong></span>
+            <span>Method: <strong class="text-slate-300">Zero-Bandwidth Viewer WS</strong> <span id="kick-session-stats" class="text-slate-500 ml-1"></span></span>
             <button onclick="openModal('auth-modal')" class="text-kick hover:underline font-semibold">Manage Kick Auth →</button>
           </div>
         </div>
@@ -351,13 +351,24 @@
           <button onclick="setCampaignFilter('status', 'all')" id="camp-stat-all" class="camp-stat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400">All (Incl. Completed)</button>
         </div>
 
-        <div class="flex items-center gap-2 w-full sm:w-auto">
+        <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          <select
+            id="campaign-sort"
+            onchange="renderCampaigns()"
+            class="bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+          >
+            <option value="default">Sort: Priority &amp; In-Progress</option>
+            <option value="ending_soon">Sort: Ending Soonest</option>
+            <option value="progress_desc">Sort: Most Progress (%)</option>
+            <option value="remaining_asc">Sort: Shortest Time Left</option>
+            <option value="game_asc">Sort: Game Name (A–Z)</option>
+          </select>
           <input
             type="text"
             id="campaign-search"
             oninput="renderCampaigns()"
             placeholder="Search game or campaign..."
-            class="w-full sm:w-64 bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+            class="w-full sm:w-56 bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
           />
         </div>
       </div>
@@ -617,6 +628,19 @@
           <input type="checkbox" id="set-badges-emotes" class="w-4 h-4 accent-indigo-500 rounded" />
           Include Twitch Badge & Emote Drops
         </label>
+
+        <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between">
+          <span class="text-slate-400">Backup / Restore Queues &amp; Settings</span>
+          <div class="flex gap-2">
+            <button onclick="exportConfigJson()" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold transition">
+              ⬇️ Export JSON
+            </button>
+            <label class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold cursor-pointer transition">
+              ⬆️ Import JSON
+              <input type="file" accept=".json" onchange="importConfigJson(this)" class="hidden" />
+            </label>
+          </div>
+        </div>
       </div>
 
       <div class="flex justify-end gap-2 pt-3 border-t border-slate-800">
@@ -761,6 +785,16 @@
         `;
       } else {
         chBox.innerHTML = `<div class="text-xs text-slate-500 py-1.5">No stream currently active</div>`;
+      }
+
+      // Session Watch Time & Claimed Stats
+      const sessStats = document.getElementById(`${prefix}-session-stats`);
+      if (sessStats) {
+        const mins = state.minutes_watched_session || 0;
+        const hrs = Math.floor(mins / 60);
+        const remM = mins % 60;
+        const timeStr = hrs > 0 ? `${hrs}h ${remM}m` : `${remM}m`;
+        sessStats.innerText = `• ⏱️ ${timeStr} mined (${state.drops_claimed_session || 0} claimed)`;
       }
 
       // Active Drop Box
@@ -990,9 +1024,23 @@
       renderCampaigns();
     }
 
+    function formatTimeRemaining(endsAtIso) {
+      if (!endsAtIso) return null;
+      const diffMs = new Date(endsAtIso).getTime() - Date.now();
+      if (diffMs <= 0) return { text: 'Ended', urgent: true };
+      const totalMins = Math.floor(diffMs / 60000);
+      const days = Math.floor(totalMins / 1440);
+      const hrs = Math.floor((totalMins % 1440) / 60);
+      const mins = totalMins % 60;
+      if (days > 0) return { text: `⏳ ${days}d ${hrs}h left`, urgent: false };
+      if (hrs > 0) return { text: `⏳ ${hrs}h ${mins}m left`, urgent: hrs < 12 };
+      return { text: `⏳ ${mins}m left`, urgent: true };
+    }
+
     function renderCampaigns() {
       const grid = document.getElementById('campaigns-grid');
       const q = (document.getElementById('campaign-search')?.value || '').toLowerCase().trim();
+      const sortMode = document.getElementById('campaign-sort')?.value || 'default';
       const tPrio = (appState.config?.twitch_priority_games || []).map(g => g.toLowerCase());
       const kPrio = (appState.config?.kick_priority_games || []).map(g => g.toLowerCase());
       const exList = (appState.config?.excluded_games || []).map(g => g.toLowerCase());
@@ -1008,6 +1056,29 @@
         if (campaignFilters.status === 'priority' && !inPrio) return false;
         if (q && !cLow.includes(q) && !gLow.includes(q)) return false;
         return true;
+      });
+
+      filtered.sort((a, b) => {
+        if (sortMode === 'ending_soon') {
+          const aEnd = a.ends_at ? new Date(a.ends_at).getTime() : Number.MAX_SAFE_INTEGER;
+          const bEnd = b.ends_at ? new Date(b.ends_at).getTime() : Number.MAX_SAFE_INTEGER;
+          return aEnd - bEnd;
+        }
+        if (sortMode === 'progress_desc') {
+          return (b.overall_progress || 0) - (a.overall_progress || 0);
+        }
+        if (sortMode === 'remaining_asc') {
+          return (a.remaining_minutes || 999999) - (b.remaining_minutes || 999999);
+        }
+        if (sortMode === 'game_asc') {
+          return (a.game_name || '').localeCompare(b.game_name || '');
+        }
+        const aPrio = (a.platform === 'twitch' ? tPrio : kPrio).includes((a.game_name || '').toLowerCase()) ? 0 : 1;
+        const bPrio = (b.platform === 'twitch' ? tPrio : kPrio).includes((b.game_name || '').toLowerCase()) ? 0 : 1;
+        if (aPrio !== bPrio) return aPrio - bPrio;
+        const aProg = (a.overall_progress > 0 && !a.finished) ? 0 : 1;
+        const bProg = (b.overall_progress > 0 && !b.finished) ? 0 : 1;
+        return aProg - bProg;
       });
 
       if (filtered.length === 0) {
@@ -1038,14 +1109,17 @@
           ? 'bg-rose-500/25 hover:bg-rose-500/40 text-rose-300 border border-rose-500/40 font-semibold'
           : 'bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-300';
 
+        const timeInfo = formatTimeRemaining(c.ends_at);
+        const unfinishable = !c.finished && c.has_earnable_drop === false;
+
         const dropsHtml = (c.drops || []).map(d => {
           const barColor = d.is_claimed ? 'bg-emerald-500' : (isTwitch ? 'bg-twitch' : 'bg-kick');
           return `
-            <div class="flex items-center gap-3 bg-slate-950/80 border border-slate-800/80 p-2.5 rounded-xl">
+            <div class="flex items-center gap-3 bg-slate-950/80 border border-slate-800/80 p-2.5 rounded-xl ${d.locked ? 'opacity-60' : ''}">
               ${d.image_url ? `<img src="${d.image_url}" class="w-10 h-10 rounded-lg object-cover bg-slate-900 shrink-0" />` : '<div class="w-10 h-10 rounded-lg bg-slate-900 flex items-center justify-center">🎁</div>'}
               <div class="flex-1 min-w-0 space-y-1">
-                <div class="flex items-center justify-between text-xs">
-                  <span class="font-semibold text-white truncate">${d.name}</span>
+                <div class="flex items-center justify-between text-xs gap-1">
+                  <span class="font-semibold text-white truncate">${d.locked ? '🔒 ' : ''}${d.name}</span>
                   <span class="font-mono text-[11px] text-slate-400 shrink-0">${d.current_minutes}/${d.required_minutes}m (${d.progress_percent}%)</span>
                 </div>
                 <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
@@ -1056,6 +1130,8 @@
                 ? '<span class="text-[10px] px-2 py-1 rounded bg-emerald-500/20 text-emerald-300 font-bold shrink-0">✓ Claimed</span>'
                 : d.can_claim
                 ? `<button onclick="claimSingleDrop('${c.platform}', '${c.id}', '${d.id}')" class="text-xs px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold shrink-0">Claim!</button>`
+                : d.locked
+                ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 shrink-0" title="Requires previous drop tier to be claimed first">Locked</span>'
                 : ''}
             </div>
           `;
@@ -1083,6 +1159,8 @@
                     <div class="text-xs text-slate-300 truncate mt-0.5">${c.name}</div>
                     <div class="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5 flex-wrap">
                       <span>${c.ends_at ? `Ends: ${new Date(c.ends_at).toLocaleDateString()} ${new Date(c.ends_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 'Active Campaign'}</span>
+                      ${timeInfo ? `<span class="px-1.5 py-0.5 rounded ${timeInfo.urgent ? 'bg-amber-500/20 text-amber-300 font-semibold' : 'bg-slate-800 text-slate-300'}">${timeInfo.text}</span>` : ''}
+                      ${unfinishable ? '<span class="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 font-semibold" title="Not enough time left before campaign ends to finish remaining drop">⚠️ Unfinishable</span>' : ''}
                       ${c.account_link_url ? `<a href="${c.account_link_url}" target="_blank" class="text-indigo-400 hover:underline font-medium">🔗 Link Account ↗</a>` : ''}
                     </div>
                   </div>
@@ -1164,6 +1242,43 @@
         const err = await res.json();
         showToast(err.detail || 'Webhook test failed', 'error');
       }
+    }
+
+    async function exportConfigJson() {
+      const res = await fetch('/api/config/export');
+      const data = await res.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `drops-miner-config-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('Exported config JSON!');
+    }
+
+    async function importConfigJson(inputEl) {
+      const file = inputEl.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const res = await fetch('/api/config/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(parsed),
+        });
+        const data = await res.json();
+        if (data.config) {
+          appState.config = data.config;
+          renderDashboard();
+          renderCampaigns();
+          showToast('Imported config & priority queues!', 'claim');
+        }
+      } catch (e) {
+        showToast('Invalid config JSON file', 'error');
+      }
+      inputEl.value = '';
     }
 
     async function updatePriorityMode(mode) {
